@@ -39,8 +39,12 @@ SOFTWARE.
 #include <Bounce2.h>
 #include "magicnumbers.h"
 #include "config.h"
+#include "door.h"
 
 Config config;
+
+Door door;
+Bounce *openLockButton = nullptr;
 
 #ifdef OFFICIALBOARD
 
@@ -59,7 +63,7 @@ bool deactivateRelay[MAX_NUM_RELAYS] = {false};
 #include <Wiegand.h>
 #include "rfid125kHz.h"
 
-MFRC522 mfrc522 = MFRC522();
+MFRC522 mfrc522;
 PN532 pn532;
 WIEGAND wg;
 RFID_Reader RFIDr;
@@ -85,7 +89,6 @@ AsyncMqttClient mqttClient;
 Ticker mqttReconnectTimer;
 Ticker wifiReconnectTimer;
 WiFiEventHandler wifiDisconnectHandler, wifiConnectHandler, wifiOnStationModeGotIPHandler;
-Bounce openLockButton;
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -104,11 +107,13 @@ bool doEnableWifi = false;
 bool formatreq = false;
 const char *httpUsername = "admin";
 unsigned long keyTimer = 0;
+
 uint8_t lastDoorbellState = 0;
 uint8_t lastDoorState = 0;
 uint8_t lastTamperState = 0;
-unsigned long nextbeat = 0;
 unsigned long openDoorMillis = 0;
+
+unsigned long nextbeat = 0;
 unsigned long previousLoopMillis = 0;
 unsigned long previousMillis = 0;
 bool shouldReboot = false;
@@ -127,7 +132,7 @@ unsigned long wiFiUptimeMillis = 0;
 #include "config.esp"
 #include "websocket.esp"
 #include "webserver.esp"
-#include "door.esp"
+// #include "door.esp"
 #include "doorbell.esp"
 
 void ICACHE_FLASH_ATTR setup()
@@ -184,6 +189,40 @@ void ICACHE_FLASH_ATTR setup()
 
 	bool configured = false;
 	configured = loadConfiguration(config);
+
+	Bounce *doorStatusPin = nullptr;
+
+	if (config.doorstatpin != 255)
+	{
+#ifdef DEBUG
+      Serial.printf("milliseconds: %lu\n", millis());
+      Serial.println("setting up doorStatusPin");
+#endif
+		doorStatusPin = new Bounce();
+		doorStatusPin->attach(config.doorstatpin);
+	}
+
+	Relay *relayLock = nullptr;
+
+	if (config.relayPin[0] != 255) {
+#ifdef DEBUG
+      Serial.printf("milliseconds: %lu\n", millis());
+      Serial.printf("setting up relayLock (pin %d)\n", config.relayPin[0]);
+#endif
+		relayLock = new Relay();
+		relayLock->controlPin = config.relayPin[0];
+		relayLock->controlType = 1;
+		relayLock->actuationTime = 2000;// config.activateTime[0];
+	}
+
+#ifdef DEBUG
+      Serial.printf("milliseconds: %lu\n", millis());
+      Serial.println("setting up door");
+#endif
+	door = Door(relayLock, doorStatusPin);
+
+	door.begin();
+
 	setupMqtt();
 	setupWebServer();
 	setupWifi(configured);
@@ -197,18 +236,21 @@ void ICACHE_RAM_ATTR loop()
 	uptime = NTP.getUptimeSec();
 	previousLoopMillis = currentMillis;
 
-	openLockButton.update();
-	if (openLockButton.fell())
+	if (openLockButton)
 	{
-		writeLatest(" ", "Button", 1);
-		mqttPublishAccess(now(), "true", "Always", "Button", " ");
-		activateRelay[0] = true;
+		openLockButton->update();
+		if (openLockButton->fell())
+		{
+			writeLatest(" ", "Button", 1);
+			mqttPublishAccess(now(), "true", "Always", "Button", " ");
+			door.activate();
+			// activateRelay[0] = true;
+		}
 	}
-
 	ledWifiStatus();
 	ledAccessDeniedOff();
 	beeperBeep();
-	doorStatus();
+	door.update();
 	doorbellStatus();
 
 	if (currentMillis >= cooldown)
@@ -218,65 +260,15 @@ void ICACHE_RAM_ATTR loop()
 
 	for (int currentRelay = 0; currentRelay < config.numRelays; currentRelay++)
 	{
-		if (config.lockType[currentRelay] == LOCKTYPE_CONTINUOUS) // Continuous relay mode
+		if (activateRelay[currentRelay])
 		{
-			if (activateRelay[currentRelay])
-			{
-				if (digitalRead(config.relayPin[currentRelay]) == !config.relayType[currentRelay]) // currently OFF, need to switch ON
-				{
-					mqttPublishIo("lock", "UNLOCKED");
-#ifdef DEBUG
-					Serial.print("mili : ");
-					Serial.println(millis());
-					Serial.printf("activating relay %d now\n", currentRelay);
-#endif
-					digitalWrite(config.relayPin[currentRelay], config.relayType[currentRelay]);
-				}
-				else // currently ON, need to switch OFF
-				{
-					mqttPublishIo("lock", "LOCKED");
-#ifdef DEBUG
-					Serial.print("mili : ");
-					Serial.println(millis());
-					Serial.printf("deactivating relay %d now\n", currentRelay);
-#endif
-					digitalWrite(config.relayPin[currentRelay], !config.relayType[currentRelay]);
-				}
-				activateRelay[currentRelay] = false;
-			}
+			door.activate();
+			mqttPublishIo("lock", "UNLOCKED");
+			activateRelay[currentRelay] = false;
 		}
-		else if (config.lockType[currentRelay] == LOCKTYPE_MOMENTARY) // Momentary relay mode
-		{
-			if (activateRelay[currentRelay])
-			{
-				mqttPublishIo("lock", "UNLOCKED");
-#ifdef DEBUG
-				Serial.print("mili : ");
-				Serial.println(millis());
-				Serial.printf("activating relay %d now\n", currentRelay);
-#endif
-				digitalWrite(config.relayPin[currentRelay], config.relayType[currentRelay]);
-				previousMillis = millis();
-				activateRelay[currentRelay] = false;
-				deactivateRelay[currentRelay] = true;
-			}
-			else if ((currentMillis - previousMillis >= config.activateTime[currentRelay]) && (deactivateRelay[currentRelay]))
-			{
-				mqttPublishIo("lock", "LOCKED");
-#ifdef DEBUG
-				Serial.println(currentMillis);
-				Serial.println(previousMillis);
-				Serial.println(config.activateTime[currentRelay]);
-				Serial.println(activateRelay[currentRelay]);
-				Serial.println("deactivate relay after this");
-				Serial.print("mili : ");
-				Serial.println(millis());
-#endif
-				digitalWrite(config.relayPin[currentRelay], !config.relayType[currentRelay]);
-				deactivateRelay[currentRelay] = false;
-			}
-		}
+
 	}
+
 	if (formatreq)
 	{
 #ifdef DEBUG

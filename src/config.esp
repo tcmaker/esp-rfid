@@ -97,11 +97,12 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 	if (hardware.containsKey("openlockpin"))
 	{
 		config.openlockpin = hardware["openlockpin"];
+
 		if (config.openlockpin != 255)
 		{
-			openLockButton = Bounce();
-			openLockButton.attach(config.openlockpin, INPUT_PULLUP);
-			openLockButton.interval(30);
+			openLockButton = new Bounce();
+			openLockButton->attach(config.openlockpin, INPUT_PULLUP);
+			openLockButton->interval(30);
 		}
 	}
 
