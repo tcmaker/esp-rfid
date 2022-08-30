@@ -16,35 +16,74 @@ class Relay
 {
 public:
     uint8_t controlPin;
-    int controlType;
-    int state;
+
+    enum ControlType {
+        unknown = 255,
+        activeLow = 0,
+        activeHigh = 1
+    };
+
+    ControlType controlType;
+
+    // actuationTime > 0 implies momentary
     unsigned long actuationTime;
 
     unsigned long lastMillis;
 
+    // delayTime > 0 allows for tracking mechanical delays
     unsigned long delayTime;
+
     Relay *chainRelay;
 
-public:
+    enum ChainType {
+        none,
+        activation,
+        deactivation,
+        both,
+        both_same_order
+    };
+
+    enum OperationState {
+        active,
+        activating,
+        inactive,
+        deactivating
+    };
+
+    OperationState state;
+
+    enum OverrideState {
+        normal,
+        holding,
+        lockedout
+    };
+
+    OverrideState override;
+
 /**
  * @brief Construct a new Relay object
  * 
  */
     Relay();
-    Relay(uint8_t pin, int type);
+    Relay(uint8_t pin, ControlType type = activeLow, unsigned long actuation_ms = 2000, unsigned long delay_ms = 0);
+    //Relay(uint8_t pin, ControlType type, unsigned long actuation_ms, unsigned long delay_ms);
     // Relay(uint8_t pin, int type, unsigned long actuationTime);
 
-    void chain(const Relay nextRelay, const unsigned long delayTime);
+    void chain(const Relay *nextRelay, ChainType chaining);
 
     void begin();
 
-    int status();
+    // OperationState status();
 
     void trigger();
 
-    void forceOn();
+    void activate();
 
-    void forceOff();
+    void deactivate();
+
+    void hold();
+    void lockout();
+    void release();
 
     bool update();
 
@@ -53,22 +92,14 @@ public:
 
 class Door
 {
-    protected:
-        uint8_t state;
-        unsigned long lastMilli;
-
     public:
     /**
      * @brief Construct a new Door object
      * 
      */
-        Door() :
-        state(0),
-        lastMilli(0) {}
-
-        Door(Relay *lock, Bounce *statusPin);
-        Door(Bounce *statusPin);
-        Door(Relay *lock);
+        Door(Relay *lock = 0, Bounce *statusPin = 0);
+        // Door(Bounce *statusPin);
+        // Door(Relay *lock);
 
     /**
      * @brief ESP Bounce pin used to read the status of the door "pressed" indicates door is closed.
@@ -81,21 +112,37 @@ class Door
      * 
      */
         unsigned long maxOpenTime;
-        int actionOpenTime;
+        //int actionOpenTime;
 
+        enum DoorState {
+            secure,
+            unlocked,
+            open,
+            tamper,
+            locking,
+            alarm,
+            unalarming
+        };
+    protected:
+        DoorState state;
+        unsigned long lastMilli;
+
+    public:
         Relay *relays[MAX_NUM_RELAYS] = {nullptr};
 
-        Relay *relayLock;
+        Relay *relayUnlock;
         Relay *relayOpen;
         Relay *relayClose;
         Relay *relayAlarm;
 
-        void unlock();
-        void open();
-        void close();
-        void lock(bool force = false);
+        // void unlock();
+        // void open();
+        // void close();
+        // void lock(bool force = false);
 
         void begin();
+
+
 
     /**
      * @brief Triggers the sequence of events necessary to open the door. 

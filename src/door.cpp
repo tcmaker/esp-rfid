@@ -3,15 +3,20 @@
 
 #include "door.h"
 
+void debugPrint(const char* info) {
+  Serial.printf("milliseconds: %lu - %s\n", millis(), info);
+}
+
 Relay::Relay() 
-  : controlType(0)
+  : controlType(unknown)
   , actuationTime(2000)
   {}
 
-Relay::Relay(uint8_t pin, int type)
+Relay::Relay(uint8_t pin, ControlType type , unsigned long actuation_ms, unsigned long delay_ms)
   : controlPin(pin)
   , controlType(type)
-  , actuationTime(2000)
+  , actuationTime(actuation_ms)
+  , delayTime(delay_ms)
   {}
 
 /**
@@ -24,22 +29,95 @@ bool Relay::isConfigured()
   return controlType != 0;
 }
 
-void Relay::forceOff()
+void Relay::activate()
 {
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu - Relay::forceOff()\n", millis());
-#endif
-  digitalWrite(controlPin, 0);
+  debugPrint("Relay::activate()");
+  if (override != normal)
+    return;
+
+  digitalWrite(controlPin, controlType);
+  lastMillis = millis();
+  if (delayTime > 0) {
+    state = activating;
+  } else {
+    state = active;
+  }
 }
 
-void Relay::forceOn()
+void Relay::deactivate()
 {
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu - Relay::forceOn()\n", millis());
-#endif
-  digitalWrite(controlPin, 1);
+  debugPrint("Relay::deactivate()");
+  if (override != normal)
+    return;
+  
+  digitalWrite(controlPin, !controlType);
+  lastMillis = millis();
+  if (delayTime > 0) {
+    state = deactivating;
+  } else {
+    state = inactive;
+  }
 }
 
+
+void Relay::hold() {
+  activate();
+  override = holding;
+}
+
+void Relay::lockout() {
+  deactivate();
+  override = lockedout;
+}
+
+void Relay::release() {
+  override = normal;
+}
+
+/**
+ * @brief Stop any delayed changes, reset relay state to default.
+ * 
+ */
+void Relay::begin()
+{
+  override = normal;
+  this->deactivate();
+  state = inactive;
+}
+
+bool Relay::update() 
+{
+  bool acted = false;
+  const unsigned long now = millis();
+
+  switch (state)
+  {
+  case activating:
+  case deactivating:
+    if (now > lastMillis + delayTime) 
+    {
+      state = (state == activating) ? active : inactive;
+      // if (this->chainRelay) {
+      //   this->chainRelay->trigger();
+      //   acted = true;
+      // }
+    }
+    break;
+  case active:
+    if (override == normal && (actuationTime > 0) && (now > lastMillis + actuationTime))
+    {
+      deactivate();
+      acted = true;
+    }
+    break;
+  default: // inactive
+    if (override == normal) {
+      digitalWrite(controlPin, !controlType);
+    }
+    break;
+  }
+  return acted;
+}
 
 /**
  * @brief Trigger the relay with activation time and possibly delayed chained relay(s)
@@ -50,81 +128,30 @@ void Relay::trigger()
 #ifdef DEBUG
       Serial.printf("milliseconds: %lu - Relay::trigger()\n", millis());
 #endif
-  state = 0;
-  lastMillis = millis();
-  this->forceOff();
+  // state = 0;
+  // lastMillis = millis();
+  this->activate();
 
   if (this->chainRelay) 
   {
-    if (this->delayTime == 0)
-    {
-      this->chainRelay->trigger();
-    }
-    else 
-    {
-      state |= 2; // indicate that update handle chain trigger
-    }
-  }
-
-  if (this->actuationTime == 0)
-  {
-    this->forceOn();
-  }
-  else 
-  {
-    state |= 1; //indicate that update should handle actuation time
-  }
-}
-
-/**
- * @brief Stop any delayed changes, reset relay state to default.
- * 
- */
-void Relay::begin()
-{
-  state = 0;
-  this->forceOn();
-}
-
-bool Relay::update() 
-{
-  bool acted = false;
-  if (state & 1) 
-  {
-    if (millis() > lastMillis + actuationTime) 
-    {
-      this->forceOn();
-      state &= ~1;
-      acted = true;
-    }
-  }
-  if (state & 2)
-  {
     if (millis() > lastMillis + delayTime)
     {
+      this->state = active;
       this->chainRelay->trigger();
-      state &= ~2;
-      acted = true;
     }
   }
-  return acted;
 }
-
 
 ///////////////////////
 //////   DOOR    /////
 /////////////////////
 
-Door::Door(Relay *lock = 0, Bounce *statusPin = 0)
+Door::Door(Relay *lock, Bounce *statusPin)
+  : maxOpenTime(10)
+  , state(open)
+  , lastMilli(millis())
 {
-  state = 0;
-  lastMilli = 0;  
-  
-  if (lock)
-  {
-    relays[RELAY_LOCK] = lock;
-  }
-
+  relays[RELAY_LOCK] = lock;
   this->statusPin = statusPin;
 }
 
@@ -143,7 +170,7 @@ void Door::begin()
     }
   }
 
-  relayLock = relays[0];
+  relayUnlock = relays[0];
   relayOpen = relays[1];
   relayClose = relays[2];
   relayAlarm = relays[3];
@@ -161,23 +188,21 @@ int Door::status()
 void Door::activate()
 {
 #ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door activating");
+      Serial.printf("milliseconds: %lu - door activating\n", millis());
 #endif
   if (relayOpen) // setup firing sequence
   {
-    relayLock->chainRelay = relayOpen;
+    relayUnlock->chainRelay = relayOpen;
   }
   else 
   {
-    relayLock->chainRelay = nullptr;
+    relayUnlock->chainRelay = nullptr;
   }
-  state = 1;
+  state = unlocked;
   lastMilli = millis();
-  relayLock->trigger();
+  relayUnlock->trigger();
 #ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door unlocked");
+      Serial.printf("milliseconds: %lu - door unlocked\n", millis());
 #endif
 
 }
@@ -191,144 +216,132 @@ bool Door::update()
       relays[i]->update();
     }
   }
-  relayLock->update();
+
+  if (statusPin) {
+    statusPin->update();
+  }
+
   bool acted = false;
+
   switch (state)
   {
-  case 0: // Door secure (closed and locked)
+  case secure: // (closed and locked)
     // relayAlarm->forceOff();
-    if (this->statusPin->rose())
-    {
-      state = 4; //tamper
-      // send alarm
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("tamper detected");
-#endif
-    }
-    break;
-  case 1: // Door unlocked
-    // relayAlarm->forceOff();
-    if (this->statusPin->rose())
+    if (this->statusPin->read() == 1)
     {
       lastMilli = millis();
-      state = 2; // Door open
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door opened");
-#endif
+      state = tamper; //tamper
+      // send alarm
+      debugPrint("tamper detected");
+    }
+    break;
+  /////////////////////////////////////////////
+  case unlocked: // Door unlocked
+    // this state is only set by the "activate" method
+    // relayAlarm->forceOff();
+    if (this->statusPin->read() == 1) // door has been opened
+    {
+      lastMilli = millis();
+      relayUnlock->hold();
+      state = open; // Door open
+      debugPrint("door opened");
     }
     else
     {
-      if (millis() > lastMilli + 10000) {
-        relayLock->forceOn();
-        state = 10; // verify door still closed after lock
-        acted = true;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door relocking");
-#endif
+      if (relayUnlock->state == Relay::OperationState::inactive) {
+        lastMilli = millis();
+        state = locking; // to verify door still closed after lock
+        debugPrint("door relocking");
       }
       // else maintain state
     }
     break;
-  case 10: // intermeidate state open/unlocked to locked
-    if (this->statusPin->rose()) // door opened before lock succeeded
+  /////////////////////////////////////////////
+  case locking: // intermediate state: open/unlocked to locked
+    if (this->statusPin->read() == 1) // door opened before lock succeeded
     {
       // unlock door, go back to open state
-      relayLock->forceOff();
-      state = 2;
-      acted = true;
       // do not reset lastMillis
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door failed to relock -- door open");
-#endif
-
-    } else { // door succesfully locked
-      state = 0;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door locked");
-#endif
-
+      relayUnlock->hold();
+      state = open;
+      acted = true;
+      debugPrint("door failed to relock in time -- door open");
+    } else if (relayUnlock->state == Relay::OperationState::inactive) { // door succesfully locked
+      state = secure;
+      debugPrint("door closed and locked");
     }
     break;
-  case 2: // Door open
-    if (this->statusPin->fell()) // door has been closed
+  /////////////////////////////////////////////
+  case open: // Door open
+    if (this->statusPin->read() == 0) // door has been closed
     {
-      relayLock->forceOn();
-      state = 10;
+      relayUnlock->release();  // does not deactivate() in case actuationTime is still running.
+      state = locking;
       acted = true;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door closed -- door locking");
-#endif
+      debugPrint("door closed -- door locking");
     }
-    else if (lastMilli - millis() > this->maxOpenTime * 1000)
+    else if (millis() > lastMilli + this->maxOpenTime * 1000)
     {
       // relayAlarm->trigger();
-      state = 3;
+      state = alarm;
       acted = true;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door exceeded maxOpenTime -- alarm on");
-#endif
+      debugPrint("door exceeded maxOpenTime -- alarm on");
     }
     // else maintain state
     break;
-  case 3: // Alarm state
-    if (this->statusPin->fell())
+  /////////////////////////////////////////////
+  case alarm: // Alarm state
+    if (this->statusPin->read() == 0)
     {
-      relayLock->forceOn();
-      state = 11; // verify door locked from alarm state
+      relayUnlock->release();
+      relayUnlock->deactivate();
+      state = unalarming; // to verify door locked from alarm state
       acted = true;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door closed -- door locking");
-#endif
+      debugPrint("door closed -- door locking");
     }
     break;
-  case 11: // transitiion from alarm to secure
-    if (this->statusPin->rose()) // door re-opened before lock succeeded
+  /////////////////////////////////////////////
+  case unalarming: // transitiion from alarm to secure
+    if (this->statusPin->read() == 1) // door re-opened before lock succeeded
     {
-      relayLock->forceOff();
-      state = 3; // back to alarm state
+      relayUnlock->hold();
+      state = alarm; // back to alarm state
       acted = true;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door failed to relock -- door open");
-#endif
+      debugPrint("door failed to relock -- door open -- alarming");
     }
     else 
     {
-      state = 0;
+      state = secure;
       // relayAlarm->forceOff();
       acted = true;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("door closed -- alarm off");
-#endif
+      debugPrint("door closed -- alarm off");
     }
     break;
-  case 4:
-    if (lastMilli - millis() > 10000) {
-      // relayAlarm->forceOn();
-      state = 3;
+  /////////////////////////////////////////////
+  case tamper:
+    if (this->statusPin->read() == 0)
+    {
+      // relayUnlock->release();
+      // relayUnlock->deactivate();
+      state = secure; // to verify door locked from alarm state
       acted = true;
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("tamper alarm triggered");
-#endif
+      debugPrint("door closed -- door locked");
+    } 
+    else if (millis() > lastMilli + 10000) 
+    {
+      // relayAlarm->forceOn();
+      relayUnlock->hold();
+      state = alarm;
+      acted = true;
+      debugPrint("tamper alarm triggered");
     }
     break;
+  /////////////////////////////////////////////
   default:
-    state = 0;
+    lastMilli = millis();
+    state = alarm;
     // log error
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("Door::update(): unknown state");
-#endif
+    debugPrint("Door::update(): unknown state");
     break;
   }
   return acted;

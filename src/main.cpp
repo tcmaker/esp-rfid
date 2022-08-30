@@ -99,6 +99,9 @@ AsyncWebSocket ws("/ws");
 #define BEEPERoff HIGH
 #define BEEPERon LOW
 
+#define DEBUG_SERIAL \
+  if (DEBUG) Serial
+
 // Variables for whole scope
 unsigned long cooldown = 0;
 unsigned long currentMillis = 0;
@@ -194,31 +197,25 @@ void ICACHE_FLASH_ATTR setup()
 
 	if (config.doorstatpin != 255)
 	{
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("setting up doorStatusPin");
-#endif
+		DEBUG_SERIAL.printf("milliseconds: %lu - setting up doorStatusPin (pin %d)\n", millis(), config.doorstatpin);
 		doorStatusPin = new Bounce();
-		doorStatusPin->attach(config.doorstatpin);
+		doorStatusPin->interval(200);
+		doorStatusPin->attach(config.doorstatpin, INPUT);
 	}
 
 	Relay *relayLock = nullptr;
 
 	if (config.relayPin[0] != 255) {
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.printf("setting up relayLock (pin %d)\n", config.relayPin[0]);
-#endif
-		relayLock = new Relay();
-		relayLock->controlPin = config.relayPin[0];
-		relayLock->controlType = 1;
-		relayLock->actuationTime = 2000;// config.activateTime[0];
+		DEBUG_SERIAL.printf("milliseconds: %lu - setting up relayLock (pin %d)\n", millis(), config.relayPin[0]);
+		relayLock = new Relay(
+			(uint8_t) config.relayPin[0],
+		 	config.relayType[0] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
+			config.activateTime[0]
+		);
 	}
 
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu\n", millis());
-      Serial.println("setting up door");
-#endif
+    DEBUG_SERIAL.printf("milliseconds: %lu - setting up door\n", millis());
+
 	door = Door(relayLock, doorStatusPin);
 
 	door.begin();
@@ -250,7 +247,10 @@ void ICACHE_RAM_ATTR loop()
 	ledWifiStatus();
 	ledAccessDeniedOff();
 	beeperBeep();
+
+	// Door::update() handles relay and status pin updates
 	door.update();
+	
 	doorbellStatus();
 
 	if (currentMillis >= cooldown)
@@ -258,6 +258,9 @@ void ICACHE_RAM_ATTR loop()
 		rfidLoop();
 	}
 
+	// activateRelay[] is set by:
+	// 1. rfidLoop for authorized access
+	// 2. WebSocket through UI
 	for (int currentRelay = 0; currentRelay < config.numRelays; currentRelay++)
 	{
 		if (activateRelay[currentRelay])
