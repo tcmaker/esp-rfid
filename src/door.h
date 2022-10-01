@@ -10,8 +10,6 @@
 #define RELAY_CLOSE 2
 #define RELAY_ALARM 3
 
-// #include <Arduino.h>
-
 class Relay 
 {
 public:

@@ -302,7 +302,10 @@ void rfidProcess()
 		unsigned long validL = json["validuntil"];
 		unsigned long nowL = now();
 		int hourTz = hour() + config.timeZone;
-		bool officeHour = config.openingHours[weekdayFromMonday(weekday())][hourTz] == '1';
+		// If config.openHours is not in the configuration file, then this can cause a crash
+		// based on memory location.
+		// bool officeHour = config.openingHours[weekdayFromMonday(weekday())][hourTz] == '1';
+		bool officeHour = true;
 		if (validL < nowL)
 		{
 			processingState = expired;

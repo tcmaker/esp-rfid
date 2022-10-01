@@ -130,17 +130,20 @@ void Relay::trigger()
 #endif
   // state = 0;
   // lastMillis = millis();
-  this->activate();
+  activate();
 
   if (this->chainRelay) 
   {
     if (millis() > lastMillis + delayTime)
     {
       this->state = active;
-      this->chainRelay->trigger();
+      if (this->chainRelay) {
+        this->chainRelay->trigger();
+      }
     }
   }
 }
+
 
 ///////////////////////
 //////   DOOR    /////

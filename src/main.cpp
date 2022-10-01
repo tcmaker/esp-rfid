@@ -45,6 +45,8 @@ Config config;
 
 Door door;
 Bounce *openLockButton = nullptr;
+Bounce *doorStatusPin = nullptr;
+Relay *relayLock = nullptr;
 
 #ifdef OFFICIALBOARD
 
@@ -135,7 +137,6 @@ unsigned long wiFiUptimeMillis = 0;
 #include "config.esp"
 #include "websocket.esp"
 #include "webserver.esp"
-// #include "door.esp"
 #include "doorbell.esp"
 
 void ICACHE_FLASH_ATTR setup()
@@ -193,7 +194,6 @@ void ICACHE_FLASH_ATTR setup()
 	bool configured = false;
 	configured = loadConfiguration(config);
 
-	Bounce *doorStatusPin = nullptr;
 
 	if (config.doorstatpin != 255)
 	{
@@ -203,7 +203,6 @@ void ICACHE_FLASH_ATTR setup()
 		doorStatusPin->attach(config.doorstatpin, INPUT);
 	}
 
-	Relay *relayLock = nullptr;
 
 	if (config.relayPin[0] != 255) {
 		DEBUG_SERIAL.printf("milliseconds: %lu - setting up relayLock (pin %d)\n", millis(), config.relayPin[0]);
@@ -240,8 +239,8 @@ void ICACHE_RAM_ATTR loop()
 		{
 			writeLatest(" ", "Button", 1);
 			mqttPublishAccess(now(), "true", "Always", "Button", " ");
-			door.activate();
-			// activateRelay[0] = true;
+			// door.activate();
+			activateRelay[0] = true;
 		}
 	}
 	ledWifiStatus();

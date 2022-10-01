@@ -8,6 +8,10 @@ struct Config {
     bool accessPointMode = false;
     IPAddress accessPointIp;
     IPAddress accessPointSubnetIp;
+    /**
+     * @brief For momentary relays, this is the minimum time (in ms) that the relay will
+     * be in the active state.
+     */
     unsigned long activateTime[MAX_NUM_RELAYS];
     unsigned long autoRestartIntervalSeconds = 0;
     unsigned long beeperInterval = 0;
