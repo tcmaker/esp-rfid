@@ -7,148 +7,6 @@ void debugPrint(const char* info) {
   Serial.printf("milliseconds: %lu - %s\n", millis(), info);
 }
 
-Relay::Relay() 
-  : controlType(unknown)
-  , actuationTime(2000)
-  {}
-
-Relay::Relay(uint8_t pin, ControlType type , unsigned long actuation_ms, unsigned long delay_ms)
-  : controlPin(pin)
-  , controlType(type)
-  , actuationTime(actuation_ms)
-  , delayTime(delay_ms)
-  {}
-
-/**
- * @brief Has the relay been configured to operate?
- * 
- * @return true if ready
- */
-bool Relay::isConfigured()
-{
-  return controlType != 0;
-}
-
-void Relay::activate()
-{
-  debugPrint("Relay::activate()");
-  if (override != normal)
-    return;
-
-  digitalWrite(controlPin, controlType);
-  lastMillis = millis();
-  if (delayTime > 0) {
-    state = activating;
-  } else {
-    state = active;
-  }
-}
-
-void Relay::deactivate()
-{
-  debugPrint("Relay::deactivate()");
-  if (override != normal)
-    return;
-  
-  digitalWrite(controlPin, !controlType);
-  lastMillis = millis();
-  if (delayTime > 0) {
-    state = deactivating;
-  } else {
-    state = inactive;
-  }
-}
-
-
-void Relay::hold() {
-  activate();
-  override = holding;
-}
-
-void Relay::lockout() {
-  deactivate();
-  override = lockedout;
-}
-
-void Relay::release() {
-  override = normal;
-}
-
-/**
- * @brief Stop any delayed changes, reset relay state to default.
- * 
- */
-void Relay::begin()
-{
-  override = normal;
-  this->deactivate();
-  state = inactive;
-}
-
-bool Relay::update() 
-{
-  bool acted = false;
-  const unsigned long now = millis();
-
-  switch (state)
-  {
-  case activating:
-  case deactivating:
-    if (now > lastMillis + delayTime) 
-    {
-      state = (state == activating) ? active : inactive;
-      // if (this->chainRelay) {
-      //   this->chainRelay->trigger();
-      //   acted = true;
-      // }
-    }
-    break;
-  case active:
-    if (override == normal && (actuationTime > 0) && (now > lastMillis + actuationTime))
-    {
-      deactivate();
-      acted = true;
-    }
-    break;
-  default: // inactive
-    if (override == normal) {
-      digitalWrite(controlPin, !controlType);
-    }
-    break;
-  }
-  return acted;
-}
-
-/**
- * @brief Trigger the relay with activation time and possibly delayed chained relay(s)
- * 
- */
-void Relay::trigger()
-{
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu - Relay::trigger()\n", millis());
-#endif
-  // state = 0;
-  // lastMillis = millis();
-  activate();
-
-  if (this->chainRelay) 
-  {
-    if (millis() > lastMillis + delayTime)
-    {
-      this->state = active;
-      if (this->chainRelay) {
-        this->chainRelay->trigger();
-      }
-    }
-  }
-}
-
-
-///////////////////////
-//////   DOOR    /////
-/////////////////////
-
 Door::Door(Relay *lock, Bounce *statusPin)
   : maxOpenTime(10)
   , state(open)
@@ -185,7 +43,7 @@ int Door::status()
 }
 
 /**
- * @brief Initiate the chain of events necessary to open the door.
+ * @brief Initiate the chain of events necessary to unlock/open the door.
  * 
  */
 void Door::activate()
@@ -193,25 +51,18 @@ void Door::activate()
 #ifdef DEBUG
       Serial.printf("milliseconds: %lu - door activating\n", millis());
 #endif
-  if (relayOpen) // setup firing sequence
-  {
-    relayUnlock->chainRelay = relayOpen;
-  }
-  else 
-  {
-    relayUnlock->chainRelay = nullptr;
-  }
   state = unlocked;
   lastMilli = millis();
-  relayUnlock->trigger();
+  relayUnlock->activate();
 #ifdef DEBUG
       Serial.printf("milliseconds: %lu - door unlocked\n", millis());
 #endif
-
 }
 
 bool Door::update()
 {
+  static bool trigger_open = false;
+
   for (auto i = 0; i < MAX_NUM_RELAYS; ++i)
   {
     if (relays[i] && relays[i]->isConfigured()) 
@@ -230,40 +81,57 @@ bool Door::update()
   {
   case secure: // (closed and locked)
     // relayAlarm->forceOff();
+    
+    // exits from this state are fob scan and tamper
+    // only the fob scan exit will result in triggering an open signal
+    trigger_open = true;
+
     if (this->statusPin->read() == 1)
     {
       lastMilli = millis();
+      trigger_open = false;
       state = tamper; //tamper
       // send alarm
       debugPrint("tamper detected");
     }
+
+    // fob scan will move to "unlocked" state via activate() method
     break;
   /////////////////////////////////////////////
   case unlocked: // Door unlocked
-    // this state is only set by the "activate" method
-    // relayAlarm->forceOff();
+    // this state is only set by the activate() method
+    // exits are door opens or unlock relay deactivates
     if (this->statusPin->read() == 1) // door has been opened
     {
       lastMilli = millis();
+      // interlock is held unlocked while door is open
       relayUnlock->hold();
       state = open; // Door open
       debugPrint("door opened");
     }
-    else
+    else if (trigger_open && relayUnlock->state == Relay::OperationState::active)
     {
-      if (relayUnlock->state == Relay::OperationState::inactive) {
-        lastMilli = millis();
-        state = locking; // to verify door still closed after lock
-        debugPrint("door relocking");
-      }
-      // else maintain state
+      // trigger open one time if transitioned from secure state
+      // wait until unlock relay has fully moved from inactive -> activating -> active
+
+      trigger_open = false;
+      if (relayOpen && relayOpen->state == Relay::OperationState::inactive)
+      {
+        relayOpen->activate();
+      }  
     }
+    else if (relayUnlock->state == Relay::OperationState::inactive) { // lock relay has automatically deactivated
+      lastMilli = millis();
+      state = locking; // to verify door still closed after lock
+      debugPrint("door relocking");
+    }
+    // else maintain state
     break;
   /////////////////////////////////////////////
   case locking: // intermediate state: open/unlocked to locked
     if (this->statusPin->read() == 1) // door opened before lock succeeded
     {
-      // unlock door, go back to open state
+               // unlock door, go back to open state
       // do not reset lastMillis
       relayUnlock->hold();
       state = open;

@@ -39,6 +39,7 @@ SOFTWARE.
 #include <Bounce2.h>
 #include "magicnumbers.h"
 #include "config.h"
+#include "relay.h"
 #include "door.h"
 
 Config config;
@@ -47,6 +48,7 @@ Door door;
 Bounce *openLockButton = nullptr;
 Bounce *doorStatusPin = nullptr;
 Relay *relayLock = nullptr;
+Relay *relayGreen = nullptr;
 
 #ifdef OFFICIALBOARD
 
@@ -199,7 +201,7 @@ void ICACHE_FLASH_ATTR setup()
 	{
 		DEBUG_SERIAL.printf("milliseconds: %lu - setting up doorStatusPin (pin %d)\n", millis(), config.doorstatpin);
 		doorStatusPin = new Bounce();
-		doorStatusPin->interval(200);
+		doorStatusPin->interval(2000);
 		doorStatusPin->attach(config.doorstatpin, INPUT);
 	}
 
@@ -213,10 +215,20 @@ void ICACHE_FLASH_ATTR setup()
 		);
 	}
 
+	if (config.relayPin[1] != 255 && config.relayPin[1] != config.relayPin[0])
+	{
+		DEBUG_SERIAL.printf("milliseconds: %lu - setting up doorStatusPin (pin %d)\n", millis(), config.relayPin[1]);
+		relayGreen = new Relay(
+			(uint8_t) config.relayPin[1],
+			config.relayType[1] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
+			config.activateTime[1]
+		);
+	}
+	
+
     DEBUG_SERIAL.printf("milliseconds: %lu - setting up door\n", millis());
 
 	door = Door(relayLock, doorStatusPin);
-
 	door.begin();
 
 	setupMqtt();
@@ -260,16 +272,22 @@ void ICACHE_RAM_ATTR loop()
 	// activateRelay[] is set by:
 	// 1. rfidLoop for authorized access
 	// 2. WebSocket through UI
-	for (int currentRelay = 0; currentRelay < config.numRelays; currentRelay++)
+	// 3. MQTT?
+	if (activateRelay[0])
 	{
-		if (activateRelay[currentRelay])
-		{
-			door.activate();
-			mqttPublishIo("lock", "UNLOCKED");
-			activateRelay[currentRelay] = false;
-		}
-
+		door.activate();
+		// if (relayGreen)
+		// 	relayGreen->activate();
+		mqttPublishIo("lock", "UNLOCKED");
+		activateRelay[0] = false;
 	}
+
+	// if ((relayLock->state == Relay::OperationState::inactive) &&
+	// 	(relayGreen) &&
+	// 	(relayGreen->state != Relay::OperationState::inactive))
+	// 	{
+	// 		relayGreen->deactivate();
+	// 	}
 
 	if (formatreq)
 	{
