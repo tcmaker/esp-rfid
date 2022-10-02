@@ -7,10 +7,11 @@
 #include "relay.h"
 
 #define RELAY_LOCK 0
-#define RELAY_OPEN 1
-#define RELAY_CLOSE 2
-#define RELAY_ALARM 3
-
+#define RELAY_INDICATOR 1
+#define RELAY_ALARM 2
+#define RELAY_OPEN 3
+#define RELAY_CLOSE 4
+#define RELAY_COUNT 5
 
 
 class Door
@@ -20,9 +21,16 @@ class Door
      * @brief Construct a new Door object
      * 
      */
-        Door(Relay *lock = 0, Bounce *statusPin = 0);
+        Door(Relay *lock = nullptr, Bounce *statusPin = nullptr);
         // Door(Bounce *statusPin);
         // Door(Relay *lock);
+        
+        Door(Bounce *statusPin, 
+             Relay *lock = nullptr,
+             Relay *indicator = nullptr, 
+             Relay *alarm = nullptr, 
+             Relay *open = nullptr, 
+             Relay *close = nullptr);
 
     /**
      * @brief ESP Bounce pin used to read the status of the door "pressed" indicates door is closed.
@@ -51,9 +59,10 @@ class Door
         unsigned long lastMilli;
 
     public:
-        Relay *relays[MAX_NUM_RELAYS] = {nullptr};
+        Relay *relays[RELAY_COUNT] = {nullptr};
 
         Relay *relayUnlock;
+        Relay *relayInd;
         Relay *relayOpen;
         Relay *relayClose;
         Relay *relayAlarm;

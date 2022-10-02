@@ -34,12 +34,12 @@ Relay::Relay(uint8_t pin, ControlType type , unsigned long actuation_ms, unsigne
  */
 bool Relay::isConfigured()
 {
-  return controlType != 0;
+  return controlType != 255;
 }
 
 void Relay::activate()
 {
-  debugPrint("Relay::activate()");
+  Serial.printf("Relay(%d)::activate()\n", controlPin);
   if (override != normal)
     return;
 
@@ -54,7 +54,7 @@ void Relay::activate()
 
 void Relay::deactivate()
 {
-  debugPrint("Relay::deactivate()");
+  Serial.printf("Relay(%d)::deactivate()\n", controlPin);
   if (override != normal)
     return;
   
@@ -99,29 +99,27 @@ bool Relay::update()
 
   switch (state)
   {
-  case activating:
-  case deactivating:
-    if (now > lastMillis + delayTime) 
-    {
-      state = (state == activating) ? active : inactive;
-      // if (this->chainRelay) {
-      //   this->chainRelay->trigger();
-      //   acted = true;
-      // }
-    }
-    break;
-  case active:
-    if (override == normal && (actuationTime > 0) && (now > lastMillis + actuationTime))
-    {
-      deactivate();
-      acted = true;
-    }
-    break;
-  default: // inactive
-    if (override == normal) {
-      digitalWrite(controlPin, !controlType);
-    }
-    break;
+    case activating:
+    case deactivating:
+        if (now > lastMillis + delayTime) 
+        {
+        state = (state == activating) ? active : inactive;
+        }
+        break;
+    case active:
+        if (override == normal && (actuationTime > 0) && (now > lastMillis + actuationTime))
+        {
+        deactivate();
+        acted = true;
+        }
+        break;
+    case inactive:
+        if (override == normal) 
+        {
+            digitalWrite(controlPin, !controlType);
+        }
+    default: // inactive
+        break;
   }
   return acted;
 }

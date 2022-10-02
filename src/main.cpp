@@ -217,7 +217,7 @@ void ICACHE_FLASH_ATTR setup()
 
 	if (config.relayPin[1] != 255 && config.relayPin[1] != config.relayPin[0])
 	{
-		DEBUG_SERIAL.printf("milliseconds: %lu - setting up doorStatusPin (pin %d)\n", millis(), config.relayPin[1]);
+		DEBUG_SERIAL.printf("milliseconds: %lu - setting up relayGreen (pin %d)\n", millis(), config.relayPin[1]);
 		relayGreen = new Relay(
 			(uint8_t) config.relayPin[1],
 			config.relayType[1] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
@@ -228,7 +228,10 @@ void ICACHE_FLASH_ATTR setup()
 
     DEBUG_SERIAL.printf("milliseconds: %lu - setting up door\n", millis());
 
-	door = Door(relayLock, doorStatusPin);
+	// door = Door(relayLock, doorStatusPin);
+	door = Door(doorStatusPin, relayLock, relayGreen);
+	// if (config.maxOpenDoorTime)
+	door.maxOpenTime = config.maxOpenDoorTime;
 	door.begin();
 
 	setupMqtt();
