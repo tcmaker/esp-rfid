@@ -9,7 +9,7 @@ void debugPrint(const char* info) {
 
 Door::Door(Relay *lock, Bounce *statusPin)
   : maxOpenTime(10)
-  , state(open)
+  , state(DoorState::start)
   , lastMilli(millis())
 {
   Door(statusPin, lock);
@@ -17,7 +17,7 @@ Door::Door(Relay *lock, Bounce *statusPin)
 
 Door::Door(Bounce *statusPin, Relay *lock, Relay *indicator, Relay *alarm, Relay *open, Relay *close) 
   : maxOpenTime(0)
-  , state(DoorState::open)
+  , state(DoorState::start)
   , lastMilli(millis())
 {
   relays[RELAY_LOCK] = lock;
@@ -94,11 +94,32 @@ bool Door::update()
 
   switch (state)
   {
+  case start:
+    if (!statusPin)
+    {
+      state = secure;
+    }
+    else if (statusPin->read() == 1)
+    {
+      Serial.printf("Door open, assuming previously activated...\n");
+      activate();
+    } 
+    else if (statusPin->read() == 0)
+    {
+      state = locking;
+    }
+    break;
   case secure: // (closed and locked)
     if (relayAlarm && relayAlarm->state == Relay::OperationState::active)
+    {
+      relayAlarm->release();
       relayAlarm->deactivate();
-    if (relayInd && relayInd->state == Relay::OperationState::active)
+    }
+    if (relayInd && (relayInd->state == Relay::OperationState::active)) 
+    {
+      relayInd->release();
       relayInd->deactivate();
+    }
 
     // exits from this state are fob scan and tamper
     // only the fob scan exit will result in triggering an open signal

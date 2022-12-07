@@ -52,7 +52,8 @@ class Door
             tamper,
             locking,
             alarm,
-            unalarming
+            unalarming,
+            start
         };
     protected:
         DoorState state;
