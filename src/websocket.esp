@@ -28,15 +28,13 @@ void ICACHE_FLASH_ATTR procMsg(AsyncWebSocketClient *client, size_t sz)
 	}
 	else if (strcmp(command, "configfile") == 0)
 	{
-		File f = SPIFFS.open("/config.json", "w+");
+		File f = SPIFFS.open("/config.json", "w");
 		if (f)
 		{
 			size_t len = measureJsonPretty(root);
 			serializeJsonPretty(root, f);
-			//f.print(msg);
 			f.close();
 			shouldReboot = true;
-			//ESP.restart();
 			writeEvent("INFO", "sys", "Config stored in the SPIFFS", String(len) + " bytes");
 		}
 	}
@@ -115,7 +113,6 @@ void ICACHE_FLASH_ATTR procMsg(AsyncWebSocketClient *client, size_t sz)
 		previousMillis = millis();
 		ws.textAll("{\"command\":\"giveAccess\"}");
 	}
-#ifndef OFFICIALBOARD
 	else if (strcmp(command, "testrelay2") == 0)
 	{
 		activateRelay[1] = true;
@@ -134,7 +131,6 @@ void ICACHE_FLASH_ATTR procMsg(AsyncWebSocketClient *client, size_t sz)
 		previousMillis = millis();
 		ws.textAll("{\"command\":\"giveAccess\"}");
 	}
-#endif
 	else if (strcmp(command, "scan") == 0)
 	{
 		WiFi.scanNetworksAsync(printScanResult, true);

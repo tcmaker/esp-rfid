@@ -11,7 +11,7 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 	size_t size = configFile.size();
 	std::unique_ptr<char[]> buf(new char[size]);
 	configFile.readBytes(buf.get(), size);
-	DynamicJsonDocument json(8192);
+	DynamicJsonDocument json(2048);
 	auto error = deserializeJson(json, buf.get());
 	if (error)
 	{
@@ -113,18 +113,15 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 	else
 		config.numRelays = 1;
 
-#ifdef OFFICIALBOARD
-	config.pinCodeRequested = hardware["pincoderequested"];
-	setupWiegandReader(5, 4);
-#endif
-#ifndef OFFICIALBOARD
 	config.readertype = hardware["readertype"];
 	int rfidss;
 	if (config.readertype == READER_WIEGAND || config.readertype == READER_WIEGAND_RDM6300)
 	{
 		int wgd0pin = hardware["wgd0pin"];
 		int wgd1pin = hardware["wgd1pin"];
-		config.pinCodeRequested = hardware["pincoderequested"];
+		config.pinCodeRequested = hardware["requirepincodeafterrfid"];
+		config.pinCodeOnly = hardware["allowpincodeonly"];
+		config.wiegandReadHex = hardware["useridstoragemode"] == "hexadecimal";
 		setupWiegandReader(wgd0pin, wgd1pin); // also some other settings like weather to use keypad or not, LED pin, BUZZER pin, Wiegand 26/34 version
 	}
 	else if (config.readertype == READER_MFRC522 || config.readertype == READER_MFRC522_RDM6300)
@@ -142,11 +139,6 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 		rfidss = hardware["sspin"];
 		setupPN532Reader(rfidss);
 	}
-#ifndef DEBUG
-	if (config.readertype > 2)
-		Serial.begin(9600);
-#endif
-#endif
 	config.fallbackMode = network["fallbackmode"] == 1;
 	config.autoRestartIntervalSeconds = general["restart"];
 	config.wifiTimeout = network["offtime"];
@@ -161,7 +153,6 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 	config.lockType[0] = hardware["ltype"];
 	config.relayType[0] = hardware["rtype"];
 
-#ifndef OFFICIALBOARD
 	config.relayPin[0] = hardware["rpin"];
 	pinMode(config.relayPin[0], OUTPUT);
 	digitalWrite(config.relayPin[0], !config.relayType[0]);
@@ -177,7 +168,6 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 		digitalWrite(config.relayPin[i], !config.relayType[i]);
 	}
 
-#endif
 	config.ssid = strdup(network["ssid"]);
 	config.wifiPassword = strdup(network["pswd"]);
 	config.accessPointMode = network["wmode"] == 1;
@@ -214,11 +204,15 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 
 	ws.setAuthentication("admin", config.httpPass);
 
-	if (general["openinghours"])
+	for (int d = 0; d < 7; d++)
 	{
-		for (int d=0; d<7; d++)
+		if (general["openinghours"])
 		{
 			config.openingHours[d] = strdup(general["openinghours"][d].as<const char *>());
+		}
+		else
+		{
+			config.openingHours[d] = strdup("111111111111111111111111");
 		}
 	}
 
@@ -235,6 +229,18 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 		config.mqttPass = strdup(mpasString.c_str());
 		String mqttTopicString = mqtt["topic"];
 		config.mqttTopic = strdup(mqttTopicString.c_str());
+		config.mqttAutoTopic = mqtt["autotopic"];
+		if (config.mqttAutoTopic)
+		{
+			uint8_t macAddr[6];
+			WiFi.softAPmacAddress(macAddr);
+			char topicSuffix[7];
+			sprintf(topicSuffix, "-%02x%02x%02x", macAddr[3], macAddr[4], macAddr[5]);
+			char *newTopic = (char *)malloc(sizeof(char) * 80);
+			strcpy(newTopic, config.mqttTopic);
+			strcat(newTopic, topicSuffix);
+			config.mqttTopic = newTopic;
+		}
 		config.mqttInterval = mqtt["syncrate"];
 
 		if (mqtt["mqttlog"] == 1)

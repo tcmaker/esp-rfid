@@ -94,15 +94,20 @@
         <br>
     </div>
     <div class="row form-group">
-        <label class="col-xs-3">Auto Restart<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="How often to automatically restart the unit to lessen risk of memory leaks and crashes."></i></label>
+        <label class="col-xs-3">Auto Restart
+            <i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="How often to automatically restart the unit to lessen risk of memory leaks and crashes."></i>
+        </label>
         <span class="col-xs-9 col-md-5">
-                <select class="form-control input-sm" id="autorestart" name="autorestart">
-                  <option value='0'>Never</option>
-                  <option value='86400' selected>Every 24h</option>
-                  <option value='604800'>Every 7 days</option>
-                  <option value='18144000'>Every 30 days</option>
-                </select>
-              </span>
+            <select class="form-control input-sm" id="autorestart" name="autorestart">
+                <option value="0">Never</option>
+                <option value="86400" selected>Every 24h</option>
+                <option value="604800">Every 7 days</option>
+                <option value="18144000">Every 30 days</option>
+                <option value="custom">Custom restart time in seconds...</option>
+            </select>
+            <br>
+            <input class="form-control input-sm hidden" placeholder="Restart time in seconds" value="3600" id="autorestart-custom" type="text">
+        </span>
         <br>
     </div>
     <div class="row form-group">
@@ -179,13 +184,31 @@
                 </span>
         </div>
         <div class="row form-group">
-            <label class="col-xs-3">Pin code requested<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="Ask pin code after having swiped an RFID card."></i></label>
+            <label class="col-xs-3">User ID storage mode<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign"
+                    aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right"
+                    data-content="IDs stored in decimal can be entered with pin code only mode. It is potentially more insecure."></i></label>
             <span class="col-xs-9 col-md-5">
-                  <select class="form-control input-sm" id="pincoderequested">
-                    <option value="false">False</option>
-                    <option value="true">True</option>
-                  </select>
-                </span>
+                <select class="form-control input-sm" id="useridstoragemode">
+                    <option value="hexadecimal">Hexadecimal</option>
+                    <option value="decimal">Decimal</option>
+                </select>
+            </span>
+        </div>
+        <div class="row form-group">
+            <label class="col-xs-3">Require pin code after RFID card<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign"
+                    aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right"
+                    data-content="Pin code is required after having swiped the RFID card."></i></label>
+            <span class="col-xs-9 col-md-5">
+                <input type="checkbox" id="requirepincodeafterrfid">
+            </span>
+        </div>
+        <div class="row form-group">
+            <label class="col-xs-3">Allow pin code only<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign"
+                    aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right"
+                    data-content="User ID is entered directly with pin pad. Make sure to use long enough IDs to be secure enough."></i></label>
+            <span class="col-xs-9 col-md-5">
+                <input type="checkbox" id="allowpincodeonly">
+            </span>
         </div>
     </div>
     <div class="" id="mfrc522Form" style="display:none">
@@ -487,52 +510,6 @@
         </div>
     </div>
 </div>
-<div id="logsettingscontent">
-    <br>
-    <br>
-    <legend>Logfile Settings</legend>
-	    <br>
-    <div class="row form-group">
-        <label class="col-xs-3">Auto-Maintenance<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="Please choose if you want to enable automatic maintenance"></i></label>
-        <div class="col-xs-9">
-            <form>
-                <label class="radio-inline">
-                    <input type="radio" value="1" name="logmaintenanceenabled">Enabled</label>
-                <label class="radio-inline">
-                    <input type="radio" value="0" name="logmaintenanceenabled" checked>Disabled</label>
-            </form>
-        </div>
-    </div>
-    <div class="row form-group">
-        <label class="col-xs-3">Rollover after KB<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="automatically roll over log files once they reach the given size"></i></label>
-        <span class="col-xs-9">
-    <input class="form-control input-sm" placeholder="10" style="display:inline;max-width:185px" id="rolloverkb" type="text">
-  </span>
-        <br>
-    </div>
-    <div class="row form-group">
-        <label class="col-xs-3">Max Files to keep<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="Enter the number of rolled over logfiles you want to keep. If you do not want to automatically delete then enter 0"></i></label>
-        <span class="col-xs-9">
-    <input class="form-control input-sm" placeholder="4" value="" style="display:inline;max-width:185px" id="maxlogfilesnumber" type="text">
-  </span>
-        <br>
-    </div>
-    <div class="row form-group">
-        <label class="col-xs-3">Check SPIFF space<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="If you enable this and the flash memory is full then the oldest log file will be deleted automatically."></i></label>
-        <div class="col-xs-9">
-            <form>
-                <label class="radio-inline"><input type="radio" value="1" name="spiffwatch">Enabled</label>
-                <label class="radio-inline"><input type="radio" value="0" name="spiffwatch" checked>Disabled</label>
-            </form>
-        </div>
-        <br> 
-    </div>
-    <div class="row form-group">    
-        <div class="col-xs-9">
-            <button onclick="savelogsettings()" class="btn btn-primary btn-sm pull-left">Save</button>
-        </div>
-    </div>
-</div>
 <div id="mqttcontent">
     <br>
     <br>
@@ -578,11 +555,22 @@
         <br>
     </div>
     <div class="row form-group">
-        <label class="col-xs-3">Topic<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="MQTT topic"></i></label>
+        <label class="col-xs-3">Topic prefix<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true"
+                data-toggle="popover" data-trigger="hover" data-placement="right"
+                data-content="Prefix applied to all MQTT topics"></i></label>
         <span class="col-xs-9">
-            <input class="form-control input-sm" placeholder="MQTT topic" value="" style="display:inline;max-width:185px" id="mqtttopic" type="text">
+            <input class="form-control input-sm" placeholder="MQTT topic" value="" style="display:inline;max-width:185px"
+                id="mqtttopic" type="text">
         </span>
         <br>
+    </div>
+    <div class="row form-group">
+        <label class="col-xs-3">Auto topic<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign"
+                aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right"
+                data-content="Automatically add a unique identifier (last 6 digits of MAC address) to the MQTT topic prefix"></i></label>
+        <span class="col-xs-9 col-md-5">
+            <input type="checkbox" id="mqttautotopic">
+        </span>
     </div>
     <div class="row form-group">   
         <label class="col-xs-3">Sync Time(sec)<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="Sync rate"></i></label>
@@ -711,7 +699,7 @@
     <div class="row form-group">    
         <label class="col-xs-3">WIFI fallback mode<i style="margin-left: 10px;" class="glyphicon glyphicon-info-sign" aria-hidden="true" data-toggle="popover" data-trigger="hover" data-placement="right" data-content="Enable fallback mode when not discover WIFI"></i></label>
         <div class="col-xs-9">
-            <form>
+            <form name="fallbackmodeForm">
                 <label class="radio-inline"><input type="radio" value="1" name="fallbackmode">Enabled</label>
                 <label class="radio-inline"><input type="radio" value="0" name="fallbackmode" checked>Disabled</label>
             </form>
@@ -749,13 +737,11 @@
 	<br>
     <div class="row form-group">
         <label class="col-xs-3">Device Time</label>
-        <span id="utc" class="col-xs-9 col-md-5">
-              </span>
+        <span id="utc" class="col-xs-9 col-md-5"></span>
     </div>
     <div class="row form-group">
         <label class="col-xs-3">Browser Time</label>
-        <span id="rtc" class="col-xs-9 col-md-5">
-              </span>
+        <span id="rtc" class="col-xs-9 col-md-5"></span>
     </div>
     <div class="row form-group">
         <div class="col-xs-3">
@@ -988,15 +974,12 @@
                             </select>
                         </div>
                     </div>
-                    <!--
-                    <div class="form-group">
-                        <label for="accinfo" class="col-sm-3 control-label">Acc Type Info</label>
+                    <div class="form-group required">
+                        <label for="validsince" class="col-sm-3 control-label">Valid Since</label>
                         <div class="col-sm-9">
-                            <pre id="accinfo">
-                            </pre>
+                            <input type="date" class="form-control" id="validsince" name="validsince" value="1970-01-01" placeholder="Valid Since" required>
                         </div>
                     </div>
-                    -->
                     <div class="form-group required">
                         <label for="validuntil" class="col-sm-3 control-label">Valid Until</label>
                         <div class="col-sm-9">

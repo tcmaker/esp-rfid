@@ -6,7 +6,6 @@ var utcSeconds;
 var timezone;
 var data = [];
 var ajaxobj;
-var isOfficialBoard = false;
 
 var maxNumRelays=4;
 var numRelays=1;
@@ -47,9 +46,10 @@ var config = {
         "openlockpin": 255,
         "doorbellpin": 255,
         "accessdeniedpin": 255,
+        "useridstoragemode": "hexadecimal",
+        "requirepincodeafterrfid": 1,
+        "allowpincodeonly": 0,
         "doorstatpin": 255,
-        "beeperpin" : 255,
-        "ledwaitingpin" : 255,
         "maxOpenDoorTime": 0
     },
     "general": {
@@ -71,16 +71,11 @@ var config = {
         "host": "",
         "port": 1883,
         "topic": "",
+        "autotopic": 0,
         "user": "",
         "pswd": "",
         "syncrate": 180,
         "mqttlog": 0
-    },
-    "logmaintenance": {
-      "enabled": 0,
-      "rolloverkb": "10",
-      "maxlogfilesnumber": 4,
-      "spiffwatch": 0
     },
     "ntp": {
         "server": "pool.ntp.org",
@@ -113,7 +108,7 @@ function browserTime() {
 
 function deviceTime() {
   var t = new Date(0); // The 0 there is the key, which sets the date to the epoch,
-  var devTime = Math.floor(utcSeconds + ((t.getTimezoneOffset() * 60) * -1));
+  var devTime = Math.floor(utcSeconds + (config.ntp.timezone * 60 * 60));
   t.setUTCSeconds(devTime);
   document.getElementById("utc").innerHTML = t.toUTCString().slice(0, -3);
 }
@@ -169,45 +164,32 @@ function listhardware() {
   document.getElementById("doorbellpin").value = config.hardware.doorbellpin;
   document.getElementById("openlockpin").value = config.hardware.openlockpin;
   document.getElementById("accessdeniedpin").value = config.hardware.accessdeniedpin;
-  document.getElementById("pincoderequested").value = config.hardware.pincoderequested;
+  document.getElementById("useridstoragemode").value = config.hardware.useridstoragemode;
+  document.getElementById("requirepincodeafterrfid").checked = config.hardware.requirepincodeafterrfid;
+  document.getElementById("allowpincodeonly").checked = config.hardware.allowpincodeonly;
   document.getElementById("ledwaitingpin").value = config.hardware.ledwaitingpin;
   document.getElementById("beeperpin").value = config.hardware.beeperpin;
-  if (isOfficialBoard) {
-    document.getElementById("readertype").value = 1;
-    document.getElementById("wg0pin").value = 5;
-    document.getElementById("wg1pin").value = 4;
-    document.getElementById("gpiorly").value = 13;
-    document.getElementById("wg0pin").disabled = true;
-    document.getElementById("wg1pin").disabled = true;
-    document.getElementById("gpiorly").disabled = true;
-    document.getElementById("readertype").disabled = true;
-  } else {
-    document.getElementById("readertype").value = config.hardware.readertype;
-    document.getElementById("wg0pin").value = config.hardware.wgd0pin;
-    document.getElementById("wg1pin").value = config.hardware.wgd1pin;
-    document.getElementById("gpioss").value = config.hardware.sspin;
-    document.getElementById("gain").value = config.hardware.rfidgain;
-    document.getElementById("gpiorly").value = config.hardware.rpin;
-    document.getElementById("numrlys").value = numRelays;
-    updateRelayForm();
-    updateUserModalForm();
+  document.getElementById("readertype").value = config.hardware.readertype;
+  document.getElementById("wg0pin").value = config.hardware.wgd0pin;
+  document.getElementById("wg1pin").value = config.hardware.wgd1pin;
+  document.getElementById("gpioss").value = config.hardware.sspin;
+  document.getElementById("gain").value = config.hardware.rfidgain;
+  document.getElementById("gpiorly").value = config.hardware.rpin;
+  document.getElementById("numrlys").value = numRelays;
+  updateRelayForm();
+  updateUserModalForm();
 
-
-    for (var i = 2; i<=numRelays; i++)
-    {
-
-      document.getElementById("gpiorly"+i).value = config.hardware["relay"+i].rpin;
-      document.getElementById("lockType"+i).value = config.hardware["relay"+i].ltype;
-      document.getElementById("typerly"+i).value = config.hardware["relay"+i].rtype;
-      document.getElementById("delay"+i).value = config.hardware["relay"+i].rtime;
-    }  
+  for (var i = 2; i<=numRelays; i++) {
+    document.getElementById("gpiorly"+i).value = config.hardware["relay"+i].rpin;
+    document.getElementById("lockType"+i).value = config.hardware["relay"+i].ltype;
+    document.getElementById("typerly"+i).value = config.hardware["relay"+i].rtype;
+    document.getElementById("delay"+i).value = config.hardware["relay"+i].rtime;
   }
   handleReader();
   handleLock();
 }
 
 function listlog() {
-//  websock.send("{\"command\":\"getlatestlog\", \"page\":" + page + "}");
   websock.send("{\"command\":\"getlatestlog\", \"page\":" + page + ", \"filename\":\"" + theCurrentLogFile +"\"}");
 }
 
@@ -241,7 +223,9 @@ function savehardware() {
   config.hardware.readertype = parseInt(document.getElementById("readertype").value);
   config.hardware.wgd0pin = parseInt(document.getElementById("wg0pin").value);
   config.hardware.wgd1pin = parseInt(document.getElementById("wg1pin").value);
-  config.hardware.pincoderequested = document.getElementById("pincoderequested").value == "true";
+  config.hardware.useridstoragemode = document.getElementById("useridstoragemode").value;
+  config.hardware.requirepincodeafterrfid = document.getElementById("requirepincodeafterrfid").checked;
+  config.hardware.allowpincodeonly = document.getElementById("allowpincodeonly").checked;
   config.hardware.sspin = parseInt(document.getElementById("gpioss").value);
   config.hardware.rfidgain = parseInt(document.getElementById("gain").value);
   config.hardware.rtype = parseInt(document.getElementById("typerly").value);
@@ -299,7 +283,11 @@ function savegeneral() {
   }
   config.general.pswd = a;
   config.general.hostnm = document.getElementById("hostname").value;
-  config.general.restart = parseInt(document.getElementById("autorestart").value);
+  if(document.getElementById("autorestart").value == "custom") {
+    config.general.restart = parseInt(document.getElementById("autorestart-custom").value);
+  } else {
+    config.general.restart = parseInt(document.getElementById("autorestart").value);
+  }
   config.general.openinghours = extractOpeningHours();
   uncommited();
 }
@@ -312,13 +300,14 @@ function savemqtt() {
     else{
       config.mqtt.enabled = 0;
     } 
-    config.mqtt.host     = document.getElementById("mqtthost").value;
-    config.mqtt.port     = parseInt(document.getElementById("mqttport").value);
-    config.mqtt.topic    = document.getElementById("mqtttopic").value;
-    config.mqtt.user     = document.getElementById("mqttuser").value;
-    config.mqtt.pswd     = document.getElementById("mqttpwd").value;
-    config.mqtt.syncrate = document.getElementById("syncrate").value;
-    config.mqtt.mqttlog = 0;
+    config.mqtt.host      = document.getElementById("mqtthost").value;
+    config.mqtt.port      = parseInt(document.getElementById("mqttport").value);
+    config.mqtt.topic     = document.getElementById("mqtttopic").value;
+    config.mqtt.autotopic = document.getElementById("mqttautotopic").checked;
+    config.mqtt.user      = document.getElementById("mqttuser").value;
+    config.mqtt.pswd      = document.getElementById("mqttpwd").value;
+    config.mqtt.syncrate  = document.getElementById("syncrate").value;
+    config.mqtt.mqttlog   = 0;
     if (parseInt($("input[name=\"mqttlog\"]:checked").val()) === 1) {
         config.mqtt.mqttlog = 1;
     }
@@ -405,12 +394,7 @@ function savenetwork() {
   config.network.wmode = wmode;
   config.network.pswd = document.getElementById("wifipass").value;
 
-  if (parseInt(document.querySelector("input[name=\"fallbackmode\"]:checked").value) === 1) {
-    config.network.fallbackmode = 1;
-  } else {
-    config.network.fallbackmode = 0;
-  }
-
+  config.network.fallbackmode = document.forms.fallbackmodeForm.fallbackmode.value;
   config.network.offtime = parseInt(document.getElementById("disable_wifi_after_seconds").value);
   uncommited();
 }
@@ -505,7 +489,6 @@ function handleSTA() {
   document.getElementById("dhcp").style.display = "block";
   if (config.network.dhcp === 0) {
     $("input[name=\"dhcpenabled\"][value=\"0\"]").prop("checked", true);
-    //$("input[name=dhcpenabled][value=\"0\"]").attr("checked", "checked");
   }
   handleDHCP();
 }
@@ -518,7 +501,6 @@ function listnetwork() {
     document.getElementById("wmodeap").checked = true;
     if (config.network.hide === 1) {
       $("input[name=\"hideapenable\"][value=\"1\"]").prop("checked", true);
-      //$("input[name=hideapenable][value=\"1\"]").attr("checked", "checked");
     }
     handleAP();
   } else {
@@ -528,7 +510,7 @@ function listnetwork() {
     document.getElementById("gateway").value = config.network.gateway;
     handleSTA();
   }
-  document.getElementById("fallbackmode").value = config.network.fallbackmode;
+  document.forms.fallbackmodeForm.fallbackmode.value = config.network.fallbackmode;
   document.getElementById("disable_wifi_after_seconds").value = config.network.offtime;
 
 }
@@ -575,6 +557,20 @@ function listgeneral() {
   document.getElementById("adminpwd").value = config.general.pswd;
   document.getElementById("hostname").value = config.general.hostnm;
   document.getElementById("autorestart").value = config.general.restart;
+  document.getElementById("autorestart-custom").value = config.general.restart;
+  // if value is not same as the restart option, it's custom
+  var checkedOption = document.querySelector("#content #autorestart option:checked");
+  if(!checkedOption || parseInt(checkedOption.value) != config.general.restart) {
+    $("#autorestart-custom").removeClass("hidden");
+    document.getElementById("autorestart").value = "custom";
+  }
+  $("#autorestart").on("change", function() {
+    if (this.value == "custom") {
+      $("#autorestart-custom").removeClass("hidden");
+    } else {
+      $("#autorestart-custom").addClass("hidden");
+    }
+  });
   populateOpeningHours();
 }
 
@@ -585,6 +581,7 @@ function listmqtt() {
     document.getElementById("mqtthost").value = config.mqtt.host;
     document.getElementById("mqttport").value = config.mqtt.port;
     document.getElementById("mqtttopic").value = config.mqtt.topic;
+    document.getElementById("mqttautotopic").checked = config.mqtt.autotopic;
     document.getElementById("mqttuser").value = config.mqtt.user;
     document.getElementById("mqttpwd").value = config.mqtt.pswd;
     document.getElementById("syncrate").value = config.mqtt.syncrate;
@@ -595,55 +592,6 @@ function listmqtt() {
       $("input[name=\"mqttha\"][value=\"1\"]").prop("checked", true);
     }
     
-}
-
-function savelogsettings() {
-  config.logmaintenance.enabled = 0;
-  if (parseInt($("input[name=\"logmaintenanceenabled\"]:checked").val()) === 1) {
-      config.logmaintenance.enabled = 1;
-  }
-  else{
-    config.logmaintenance.enabled = 0;
-  } 
-  config.logmaintenance.rolloverkb     = document.getElementById("rolloverkb").value;
-  config.logmaintenance.maxlogfilesnumber     = parseInt(document.getElementById("maxlogfilesnumber").value);
-  config.logmaintenance.spiffwatch = 0;
-  if (parseInt($("input[name=\"spiffwatch\"]:checked").val()) === 1) {
-      config.logmaintenance.spiffwatch = 1;
-  }
-  else{
-      config.logmaintenance.spiffwatch = 0;
-  } 
-  uncommited();
-}
-
-function listlogsettings() {
-
-  // downstream compatibility
-
- if (!(config.hasOwnProperty("logmaintenance"))) 
-  {
-    logmaintenanceJson =
-    { 
-      "enabled": 0,
-      "rolloverkb": "10",
-      "maxlogfilesnumber": 5,
-      "spiffwatch": 0
-    };
-
-    config["logmaintenance"] = logmaintenanceJson; 
-  }
-
-
-  if (config.logmaintenance.enabled === 1) {
-      $("input[name=\"logmaintenanceenabled\"][value=\"1\"]").prop("checked", true);
-  }
-  document.getElementById("rolloverkb").value = config.logmaintenance.rolloverkb;
-  document.getElementById("maxlogfilesnumber").value = config.logmaintenance.maxlogfilesnumber;
-  if (config.logmaintenance.spiffwatch === 1) {
-      $("input[name=\"spiffwatch\"][value=\"1\"]").prop("checked", true);
-  }
- 
 }
 
 function getFileList() {
@@ -793,9 +741,6 @@ function getContent(contentname) {
         case "#hardwarecontent":
           listhardware();
           break;
-        case "#logsettingscontent":
-          listlogsettings();
-          break;
         case "#logmaintenancecontent":
           page = 1;
           data = [];
@@ -879,20 +824,15 @@ function restoreSet() {
 
 function restore1by1(i, len, data) {
   var part = 100 / len;
-  var uid, pincode, user, acc, valid;
   document.getElementById("dynamic").style.width = part * (i + 1) + "%";
   var datatosend = {};
-  uid = data[i].uid;
-  pincode = data[i].pincode;
-  user = data[i].username;
-  acc = data[i].acctype;
-  valid = data[i].validuntil;
   datatosend.command = "userfile";
-  datatosend.uid = uid;
-  datatosend.pincode = pincode;
-  datatosend.user = user;
-  datatosend.acctype = acc;
-  datatosend.validuntil = valid;
+  datatosend.uid = data[i].uid;
+  datatosend.pincode = data[i].pincode;
+  datatosend.user = data[i].username;
+  datatosend.acctype = data[i].acctype;
+  datatosend.validsince = data[i].validsince;
+  datatosend.validuntil = data[i].validuntil;
   websock.send(JSON.stringify(datatosend));
   slot++;
   if (slot === len) {
@@ -1140,7 +1080,7 @@ function initEventTable() {
           "parser": function(value) {
             if (value < 1520665101) {
               return value;
-            } else {
+            } else {  
               var comp = new Date();
               value = Math.floor(value + ((comp.getTimezoneOffset() * 60) * -1));
               var vuepoch = new Date(value * 1000);
@@ -1337,6 +1277,21 @@ function initUserTable() {
             },
           },
           {
+            "name": "validsince",
+            "title": "Valid Since",
+            "breakpoints": "xs sm",
+            "parser": function(value) {
+              console.log(value)
+              var comp = new Date();
+              value = Math.floor(value + ((comp.getTimezoneOffset() * 60) * -1));
+              var vuepoch = new Date(value * 1000);
+              var formatted = vuepoch.getFullYear() +
+                "-" + twoDigits(vuepoch.getMonth() + 1) +
+                "-" + twoDigits(vuepoch.getDate());
+              return formatted;
+            },
+          },
+          {
             "name": "validuntil",
             "title": "Valid Until",
             "breakpoints": "xs sm",
@@ -1348,7 +1303,7 @@ function initUserTable() {
                 "-" + twoDigits(vuepoch.getMonth() + 1) +
                 "-" + twoDigits(vuepoch.getDate());
               return formatted;
-            },
+            }
           }
         ],
         rows: data,
@@ -1381,6 +1336,7 @@ function initUserTable() {
             $editor.find("#acctype2").val(giveAccType(2));
             $editor.find("#acctype3").val(giveAccType(3));
             $editor.find("#acctype4").val(giveAccType(4));
+            $editor.find("#validsince").val(values.validsince);
             $editor.find("#validuntil").val(values.validuntil);
             $modal.data("row", row);
             $editorTitle.text("Edit User # " + values.username);
@@ -1415,8 +1371,10 @@ function initUserTable() {
           acctype2: parseInt($editor.find("#acctype2").val()),
           acctype3: parseInt($editor.find("#acctype3").val()),
           acctype4: parseInt($editor.find("#acctype4").val()),
+          validsince: (new Date($editor.find("#validsince").val()).getTime() / 1000),
           validuntil: (new Date($editor.find("#validuntil").val()).getTime() / 1000)
         };
+      console.log(values.validuntil);
       if (row instanceof window.FooTable.Row) {
         row.delete();
         values.id = uid++;
@@ -1434,6 +1392,9 @@ function initUserTable() {
       datatosend.acctype2 = parseInt($editor.find("#acctype2").val());
       datatosend.acctype3 = parseInt($editor.find("#acctype3").val());
       datatosend.acctype4 = parseInt($editor.find("#acctype4").val());
+      var validsince = $editor.find("#validsince").val();
+      var vsepoch = (new Date(validsince).getTime() / 1000);
+      datatosend.validsince = vsepoch;
       var validuntil = $editor.find("#validuntil").val();
       var vuepoch = (new Date(validuntil).getTime() / 1000);
       datatosend.validuntil = vuepoch;
@@ -1469,9 +1430,6 @@ function socketMessageListener(evt) {
   if (obj.hasOwnProperty("command")) {
     switch (obj.command) {
       case "status":
-        if (obj.hasOwnProperty("board")) {
-          isOfficialBoard = true;
-        }
         ajaxobj = obj;
         getContent("#statuscontent");
         break;
@@ -1838,10 +1796,6 @@ $("#reset").click(function() {
 $("#eventlog").click(function() {
   theCurrentLogFile = "/eventlog.json";
   getContent("#eventcontent");
-  return false;
-});
-$("#logsettings").click(function() {
-  getContent("#logsettingscontent");
   return false;
 });
 $("#logmaintenance").click(function() {

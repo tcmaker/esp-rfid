@@ -22,7 +22,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
  */
-#define VERSION "1.3.5"
+#define VERSION "2.0.0-dev"
 
 #include "Arduino.h"
 #include <ESP8266WiFi.h>
@@ -50,24 +50,12 @@ Bounce *doorStatusPin = nullptr;
 Relay *relayLock = nullptr;
 Relay *relayGreen = nullptr;
 
-#ifdef OFFICIALBOARD
-
-#include <Wiegand.h>
-
-WIEGAND wg;
-bool activateRelay[MAX_NUM_RELAYS] = {false};
-bool deactivateRelay[MAX_NUM_RELAYS] = {false};
-
-#endif
-
-#ifndef OFFICIALBOARD
-
 #include <MFRC522.h>
 #include "PN532.h"
 #include <Wiegand.h>
 #include "rfid125kHz.h"
 
-MFRC522 mfrc522;
+MFRC522 mfrc522 = MFRC522();
 PN532 pn532;
 WIEGAND wg;
 RFID_Reader RFIDr;
@@ -75,8 +63,6 @@ RFID_Reader RFIDr;
 // relay specific variables
 bool activateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
 bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
-
-#endif
 
 // these are from vendors
 #include "webh/glyphicons-halflings-regular.woff.gz.h"
@@ -124,7 +110,7 @@ unsigned long nextbeat = 0;
 unsigned long previousLoopMillis = 0;
 unsigned long previousMillis = 0;
 bool shouldReboot = false;
-unsigned long uptime = 0;
+unsigned long uptimeSeconds = 0;
 unsigned long wifiPinBlink = millis();
 unsigned long wiFiUptimeMillis = 0;
 
@@ -143,15 +129,8 @@ unsigned long wiFiUptimeMillis = 0;
 
 void ICACHE_FLASH_ATTR setup()
 {
-#ifdef OFFICIALBOARD
-	// Set relay pin to LOW signal as early as possible
-	pinMode(13, OUTPUT);
-	digitalWrite(13, LOW);
-	delay(200);
-#endif
-
 #ifdef DEBUG
-	Serial.begin(9600);
+	Serial.begin(115200);
 	Serial.println();
 
 	Serial.print(F("[ INFO ] ESP RFID v"));
@@ -244,7 +223,7 @@ void ICACHE_RAM_ATTR loop()
 {
 	currentMillis = millis();
 	deltaTime = currentMillis - previousLoopMillis;
-	uptime = NTP.getUptimeSec();
+	uptimeSeconds = NTP.getUptimeSec();
 	previousLoopMillis = currentMillis;
 
 	if (openLockButton)
@@ -303,7 +282,7 @@ void ICACHE_RAM_ATTR loop()
 		ESP.restart();
 	}
 
-	if (config.autoRestartIntervalSeconds > 0 && uptime > config.autoRestartIntervalSeconds * 1000)
+	if (config.autoRestartIntervalSeconds > 0 && uptimeSeconds > config.autoRestartIntervalSeconds)
 	{
 		writeEvent("WARN", "sys", "Auto restarting...", "");
 		shouldReboot = true;
@@ -312,6 +291,7 @@ void ICACHE_RAM_ATTR loop()
 	if (shouldReboot)
 	{
 		writeEvent("INFO", "sys", "System is going to reboot", "");
+		SPIFFS.end();
 		ESP.restart();
 	}
 
@@ -341,7 +321,7 @@ void ICACHE_RAM_ATTR loop()
 	{
 		if ((unsigned)now() > nextbeat)
 		{
-			mqttPublishHeartbeat(now(), uptime);
+			mqttPublishHeartbeat(now(), uptimeSeconds);
 			nextbeat = (unsigned)now() + config.mqttInterval;
 #ifdef DEBUG
 			Serial.print("[ INFO ] Nextbeat=");

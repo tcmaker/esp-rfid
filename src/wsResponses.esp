@@ -36,8 +36,10 @@ void ICACHE_FLASH_ATTR sendUserList(int page, AsyncWebSocketClient *client)
 					int AccType = json[theKey];
 					item[theKey] = AccType;
 				}
+				unsigned long validsince = json["validsince"];
 				unsigned long validuntil = json["validuntil"];
 				item["username"] = username;
+				item["validsince"] = validsince;
 				item["validuntil"] = validuntil;
 				item["pincode"] = pincode;
 			}
@@ -75,9 +77,6 @@ void ICACHE_FLASH_ATTR sendStatus()
 	}
 	DynamicJsonDocument root(1024);
 	root["command"] = "status";
-#ifdef OFFICIALBOARD
-	root["board"] = "brdV2";
-#endif
 	root["heap"] = ESP.getFreeHeap();
 	root["chipid"] = String(ESP.getChipId(), HEX);
 	root["cpu"] = ESP.getCpuFreqMHz();

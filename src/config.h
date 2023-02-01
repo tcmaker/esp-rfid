@@ -1,9 +1,5 @@
 struct Config {
-#ifdef OFFICIALBOARD
-    int relayPin[MAX_NUM_RELAYS] = {13};
-#else
     int relayPin[MAX_NUM_RELAYS];
-#endif
     uint8_t accessdeniedpin = 255;
     bool accessPointMode = false;
     IPAddress accessPointIp;
@@ -38,6 +34,7 @@ struct Config {
     char *mqttPass = NULL;
     int mqttPort;
     char *mqttTopic = NULL;
+    bool mqttAutoTopic = false;
     char *mqttUser = NULL;
     bool networkHidden = false;
     char *ntpServer = NULL;
@@ -45,7 +42,9 @@ struct Config {
     int numRelays = 1;
     char *openingHours[7];
     uint8_t openlockpin = 255;
-    bool pinCodeRequested;
+    bool pinCodeRequested = true;
+    bool pinCodeOnly = false;
+    bool wiegandReadHex = true;
     bool present = false;
     int readertype;
     int relayType[MAX_NUM_RELAYS];
