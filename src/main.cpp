@@ -26,7 +26,7 @@ SOFTWARE.
 
 #include "Arduino.h"
 #include <ESP8266WiFi.h>
-#include <SPI.h>
+// #include <SPI.h>
 #include <ESP8266mDNS.h>
 #include <ArduinoJson.h>
 #include <FS.h>
@@ -37,32 +37,12 @@ SOFTWARE.
 #include "Ntp.h"
 #include <AsyncMqttClient.h>
 #include <Bounce2.h>
-#include "magicnumbers.h"
+#include "helpers.h"
 #include "config.h"
+#include "magicnumbers.h"
 #include "relay.h"
 #include "door.h"
-
-Config config;
-
-Door door;
-Bounce *openLockButton = nullptr;
-Bounce *doorStatusPin = nullptr;
-Relay *relayLock = nullptr;
-Relay *relayGreen = nullptr;
-
-#include <MFRC522.h>
-#include "PN532.h"
-#include <Wiegand.h>
-#include "rfid125kHz.h"
-
-MFRC522 mfrc522 = MFRC522();
-PN532 pn532;
-WIEGAND wg;
-RFID_Reader RFIDr;
-
-// relay specific variables
-bool activateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
-bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
+#include "accesscontrol.h"
 
 // these are from vendors
 #include "webh/glyphicons-halflings-regular.woff.gz.h"
@@ -74,6 +54,16 @@ bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
 #include "webh/esprfid.htm.gz.h"
 #include "webh/index.html.gz.h"
 
+Door door;
+Bounce *openLockButton = nullptr;
+Bounce *doorStatusPin = nullptr;
+Relay *relayLock = nullptr;
+Relay *relayGreen = nullptr;
+
+// relay specific variables
+bool activateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
+bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
+
 NtpClient NTP;
 AsyncMqttClient mqttClient;
 Ticker mqttReconnectTimer;
@@ -83,14 +73,9 @@ WiFiEventHandler wifiDisconnectHandler, wifiConnectHandler, wifiOnStationModeGot
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-#define LEDoff HIGH
-#define LEDon LOW
-
-#define BEEPERoff HIGH
-#define BEEPERon LOW
-
 #define DEBUG_SERIAL \
-  if (DEBUG) Serial
+	if (DEBUG)       \
+	Serial
 
 // Variables for whole scope
 unsigned long cooldown = 0;
@@ -118,14 +103,17 @@ unsigned long wiFiUptimeMillis = 0;
 #include "beeper.esp"
 #include "log.esp"
 #include "mqtt.esp"
-#include "helpers.esp"
 #include "wsResponses.esp"
-#include "rfid.esp"
+// #include "rfid.esp"
 #include "wifi.esp"
-#include "config.esp"
 #include "websocket.esp"
 #include "webserver.esp"
 #include "doorbell.esp"
+
+void accessGranted_wrapper(String reason)
+{
+	door.activate();
+}
 
 void ICACHE_FLASH_ATTR setup()
 {
@@ -173,45 +161,58 @@ void ICACHE_FLASH_ATTR setup()
 	}
 
 	bool configured = false;
-	configured = loadConfiguration(config);
+	configured = loadConfiguration();
 
+	ws.setAuthentication("admin", config.httpPass);
+
+	if (config.openlockpin != 255)
+	{
+		openLockButton = new Bounce();
+		openLockButton->attach(config.openlockpin, INPUT_PULLUP);
+		openLockButton->interval(30);
+	}
 
 	if (config.doorstatpin != 255)
 	{
-		DEBUG_SERIAL.printf("milliseconds: %lu - setting up doorStatusPin (pin %d)\n", millis(), config.doorstatpin);
+		DEBUG_SERIAL.printf("microseconds: %lu - setting up doorStatusPin (pin %d)\n", micros(), config.doorstatpin);
 		doorStatusPin = new Bounce();
 		doorStatusPin->interval(2000);
 		doorStatusPin->attach(config.doorstatpin, INPUT);
 	}
 
-
-	if (config.relayPin[0] != 255) {
-		DEBUG_SERIAL.printf("milliseconds: %lu - setting up relayLock (pin %d)\n", millis(), config.relayPin[0]);
+	if (config.relayPin[0] != 255)
+	{
+		DEBUG_SERIAL.printf("microseconds: %lu - setting up relayLock (pin %d)\n", micros(), config.relayPin[0]);
 		relayLock = new Relay(
-			(uint8_t) config.relayPin[0],
-		 	config.relayType[0] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
-			config.activateTime[0]
-		);
+			(uint8_t)config.relayPin[0],
+			config.relayType[0] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
+			config.activateTime[0]);
 	}
 
 	if (config.relayPin[1] != 255 && config.relayPin[1] != config.relayPin[0])
 	{
-		DEBUG_SERIAL.printf("milliseconds: %lu - setting up relayGreen (pin %d)\n", millis(), config.relayPin[1]);
+		DEBUG_SERIAL.printf("microseconds: %lu - setting up relayGreen (pin %d)\n", micros(), config.relayPin[1]);
 		relayGreen = new Relay(
-			(uint8_t) config.relayPin[1],
+			(uint8_t)config.relayPin[1],
 			config.relayType[1] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
-			config.activateTime[1]
-		);
+			config.activateTime[1]);
 	}
-	
 
-    DEBUG_SERIAL.printf("milliseconds: %lu - setting up door\n", millis());
+	DEBUG_SERIAL.printf("microseconds: %lu - setting up reader\n", micros());
+
+	TCMWiegand.begin(13, 12);
+	// pinMode(13, INPUT_PULLUP);
+	// pinMode(12, INPUT_PULLUP);
+
+	DEBUG_SERIAL.printf("microseconds: %lu - setting up door\n", micros());
 
 	// door = Door(relayLock, doorStatusPin);
 	door = Door(doorStatusPin, relayLock, relayGreen);
 	// if (config.maxOpenDoorTime)
 	door.maxOpenTime = config.maxOpenDoorTime;
 	door.begin();
+
+	AccessControl.accessGranted = accessGranted_wrapper;
 
 	setupMqtt();
 	setupWebServer();
@@ -237,19 +238,26 @@ void ICACHE_RAM_ATTR loop()
 			activateRelay[0] = true;
 		}
 	}
+
+	// digitalWrite(9, 1);
+
 	ledWifiStatus();
 	ledAccessDeniedOff();
 	beeperBeep();
 
 	// Door::update() handles relay and status pin updates
 	door.update();
-	
+
 	doorbellStatus();
 
-	if (currentMillis >= cooldown)
-	{
-		rfidLoop();
-	}
+	// if (currentMillis >= cooldown)
+	// {
+	// 	rfidLoop();
+	// }
+
+	TCMWiegand.loop();
+	// HidProxWiegand.loop();
+	AccessControl.loop();
 
 	// activateRelay[] is set by:
 	// 1. rfidLoop for authorized access

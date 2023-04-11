@@ -33,3 +33,10 @@
 #define LOCKTYPE_MOMENTARY 0
 #define LOCKTYPE_CONTINUOUS 1
 #define LOCKTYPE_INTERLOCK 2
+
+#define LEDoff HIGH
+#define LEDon LOW
+
+#define BEEPERoff HIGH
+#define BEEPERon LOW
+

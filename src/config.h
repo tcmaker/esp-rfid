@@ -1,3 +1,13 @@
+#ifndef config_h
+#define config_h
+
+#include "Arduino.h"
+#include <ESP8266WiFi.h>
+#include <FS.h>
+#include <ArduinoJson.h>
+#include "magicnumbers.h"
+#include "helpers.h"
+
 struct Config {
     int relayPin[MAX_NUM_RELAYS];
     uint8_t accessdeniedpin = 255;
@@ -57,3 +67,8 @@ struct Config {
     const char *wifiPassword = NULL;
     unsigned long wifiTimeout = 0;
 };
+
+bool ICACHE_FLASH_ATTR loadConfiguration();
+
+extern Config config;
+#endif

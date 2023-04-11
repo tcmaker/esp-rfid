@@ -1,4 +1,8 @@
-bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
+#include "config.h"
+
+Config config;
+
+bool ICACHE_FLASH_ATTR loadConfiguration()
 {
 	File configFile = SPIFFS.open("/config.json", "r");
 	if (!configFile)
@@ -31,37 +35,26 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 #ifdef DEBUG
 	Serial.println(F("[ INFO ] Trying to setup RFID Hardware"));
 #endif
-	if (hardware.containsKey("wifipin"))
+
+	config.wifipin = hardware["wifipin"] | 255;
+	if (config.wifipin != 255)
 	{
-		config.wifipin = hardware["wifipin"];
-		if (config.wifipin != 255)
-		{
-			pinMode(config.wifipin, OUTPUT);
-			digitalWrite(config.wifipin, LEDoff);
-		}
+		pinMode(config.wifipin, OUTPUT);
+		digitalWrite(config.wifipin, LEDoff);
 	}
 
-	if (hardware.containsKey("doorstatpin"))
+	config.doorstatpin = hardware["doorstatpin"] | 255;
+	if (config.doorstatpin != 255)
 	{
-		config.doorstatpin = hardware["doorstatpin"];
-		if (config.doorstatpin != 255)
-		{
-			pinMode(config.doorstatpin, INPUT);
-		}
+		pinMode(config.doorstatpin, INPUT);
 	}
 
-	if (hardware.containsKey("maxOpenDoorTime"))
-	{
-		config.maxOpenDoorTime = hardware["maxOpenDoorTime"];
-	}
+	config.maxOpenDoorTime = hardware["maxOpenDoorTime"] | 0;
 
-	if (hardware.containsKey("doorbellpin"))
+	config.doorbellpin = hardware["doorbellpin"] | 255;
+	if (config.doorbellpin != 255)
 	{
-		config.doorbellpin = hardware["doorbellpin"];
-		if (config.doorbellpin != 255)
-		{
-			pinMode(config.doorbellpin, INPUT);
-		}
+		pinMode(config.doorbellpin, INPUT);
 	}
 
 	if (hardware.containsKey("accessdeniedpin"))
@@ -97,13 +90,6 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 	if (hardware.containsKey("openlockpin"))
 	{
 		config.openlockpin = hardware["openlockpin"];
-
-		if (config.openlockpin != 255)
-		{
-			openLockButton = new Bounce();
-			openLockButton->attach(config.openlockpin, INPUT_PULLUP);
-			openLockButton->interval(30);
-		}
 	}
 
 	if (hardware.containsKey("numrelays"))
@@ -122,7 +108,7 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 		config.pinCodeRequested = hardware["requirepincodeafterrfid"];
 		config.pinCodeOnly = hardware["allowpincodeonly"];
 		config.wiegandReadHex = hardware["useridstoragemode"] == "hexadecimal";
-		setupWiegandReader(wgd0pin, wgd1pin); // also some other settings like weather to use keypad or not, LED pin, BUZZER pin, Wiegand 26/34 version
+		// setupWiegandReader(wgd0pin, wgd1pin); // also some other settings like weather to use keypad or not, LED pin, BUZZER pin, Wiegand 26/34 version
 	}
 	else if (config.readertype == READER_MFRC522 || config.readertype == READER_MFRC522_RDM6300)
 	{
@@ -132,12 +118,12 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 			rfidss = hardware["sspin"];
 		}
 		int rfidgain = hardware["rfidgain"];
-		setupMFRC522Reader(rfidss, rfidgain);
+		// setupMFRC522Reader(rfidss, rfidgain);
 	}
 	else if (config.readertype == READER_PN532 || config.readertype == READER_PN532_RDM6300)
 	{
 		rfidss = hardware["sspin"];
-		setupPN532Reader(rfidss);
+		// setupPN532Reader(rfidss);
 	}
 	config.fallbackMode = network["fallbackmode"] == 1;
 	config.autoRestartIntervalSeconds = general["restart"];
@@ -201,8 +187,6 @@ bool ICACHE_FLASH_ATTR loadConfiguration(Config &config)
 	}
 	config.accessPointIp.fromString(apipch);
 	config.accessPointSubnetIp.fromString(apsubnetch);
-
-	ws.setAuthentication("admin", config.httpPass);
 
 	for (int d = 0; d < 7; d++)
 	{
