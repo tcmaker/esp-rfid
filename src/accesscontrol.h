@@ -12,19 +12,27 @@
 #define WIEGAND_MIN_TIME 2100   // minimum time (us) between D0/D1 edges 
 #define LOOKUP_DELAY 500        // maximum time (ms) to wait for UID lookup response from server
 
+enum AccessResult {
+    unrecognized = 1,
+    banned,
+    expired,
+    not_yet_valid,
+    granted
+};
+
 enum ControlState {
     wait_read,
     lookup_local,
     lookup_remote,
     process_record,
     check_pin,
-    grant_access,
-    deny_access,
+    // grant_access,
+    // deny_access,
     cool_down
 };
 
 void readHandler(ProxReaderInfo* reader);
-void retrieveRecord(String uid);
+// void retrieveRecord(String uid);
 
 class TCMWiegandClass {
     public:
@@ -55,8 +63,8 @@ class AccessControlClass {
 
     void (*lookupCredential)(JsonDocument* user);
     void (*remoteLookup)(String scanned_id);
-    void (*accessDenied)(String reason);
-    void (*accessGranted)(String reason);
+    void (*accessDenied)(AccessResult result, String detail, String credential, String name);
+    void (*accessGranted)(AccessResult result, String detail, String credential, String name);
 
 
     // void begin();
@@ -65,8 +73,8 @@ class AccessControlClass {
 
     // void reset();
 
-    bool lookupUID_local();
-    void checkUserRecord();
+    ControlState lookupUID_local();
+    ControlState checkUserRecord();
 
     ControlState state;
 

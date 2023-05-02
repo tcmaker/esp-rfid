@@ -37,12 +37,6 @@ SOFTWARE.
 #include "Ntp.h"
 #include <AsyncMqttClient.h>
 #include <Bounce2.h>
-#include "helpers.h"
-#include "config.h"
-#include "magicnumbers.h"
-#include "relay.h"
-#include "door.h"
-#include "accesscontrol.h"
 
 // these are from vendors
 #include "webh/glyphicons-halflings-regular.woff.gz.h"
@@ -54,16 +48,6 @@ SOFTWARE.
 #include "webh/esprfid.htm.gz.h"
 #include "webh/index.html.gz.h"
 
-Door door;
-Bounce *openLockButton = nullptr;
-Bounce *doorStatusPin = nullptr;
-Relay *relayLock = nullptr;
-Relay *relayGreen = nullptr;
-
-// relay specific variables
-bool activateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
-bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
-
 NtpClient NTP;
 AsyncMqttClient mqttClient;
 Ticker mqttReconnectTimer;
@@ -73,9 +57,7 @@ WiFiEventHandler wifiDisconnectHandler, wifiConnectHandler, wifiOnStationModeGot
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-#define DEBUG_SERIAL \
-	if (DEBUG)       \
-	Serial
+#define DEBUG_SERIAL if(DEBUG)Serial
 
 // Variables for whole scope
 unsigned long cooldown = 0;
@@ -99,10 +81,29 @@ unsigned long uptimeSeconds = 0;
 unsigned long wifiPinBlink = millis();
 unsigned long wiFiUptimeMillis = 0;
 
+#include "config.h"
+#include "log.esp"
+#include "mqtt_handler.h"
+#include "helpers.h"
+#include "magicnumbers.h"
+#include "relay.h"
+#include "door.h"
+#include "accesscontrol.h"
+
+Door door;
+Bounce *openLockButton = nullptr;
+Bounce *doorStatusPin = nullptr;
+Relay *relayLock = nullptr;
+Relay *relayGreen = nullptr;
+
+bool networkFirstUp = false;
+
+// relay specific variables
+bool activateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
+bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
+
 #include "led.esp"
 #include "beeper.esp"
-#include "log.esp"
-#include "mqtt.esp"
 #include "wsResponses.esp"
 // #include "rfid.esp"
 #include "wifi.esp"
@@ -110,9 +111,17 @@ unsigned long wiFiUptimeMillis = 0;
 #include "webserver.esp"
 #include "doorbell.esp"
 
-void accessGranted_wrapper(String reason)
+void accessGranted_wrapper(AccessResult result, String detail, String credential, String name)
 {
+	DEBUG_SERIAL.printf("Granted: %s\n", detail.c_str());
+	mqttPublishAccess(now(), result, detail, credential, name);
 	door.activate();
+}
+
+void accessDenied_wrapper(AccessResult result, String detail, String credential, String name)
+{
+	DEBUG_SERIAL.printf("Denied: %s\n", detail.c_str());
+	mqttPublishAccess(now(), result, detail, credential, name);
 }
 
 void ICACHE_FLASH_ATTR setup()
@@ -167,6 +176,7 @@ void ICACHE_FLASH_ATTR setup()
 
 	if (config.openlockpin != 255)
 	{
+		DEBUG_SERIAL.printf("microseconds: %lu - setting up openLockButton (pin %d)\n", micros(), config.openlockpin);
 		openLockButton = new Bounce();
 		openLockButton->attach(config.openlockpin, INPUT_PULLUP);
 		openLockButton->interval(30);
@@ -213,7 +223,8 @@ void ICACHE_FLASH_ATTR setup()
 	door.begin();
 
 	AccessControl.accessGranted = accessGranted_wrapper;
-
+	AccessControl.accessDenied = accessDenied_wrapper;
+	
 	setupMqtt();
 	setupWebServer();
 	setupWifi(configured);
@@ -224,7 +235,6 @@ void ICACHE_RAM_ATTR loop()
 {
 	currentMillis = millis();
 	deltaTime = currentMillis - previousLoopMillis;
-	uptimeSeconds = NTP.getUptimeSec();
 	previousLoopMillis = currentMillis;
 
 	if (openLockButton)
@@ -233,7 +243,7 @@ void ICACHE_RAM_ATTR loop()
 		if (openLockButton->fell())
 		{
 			writeLatest(" ", "Button", 1);
-			mqttPublishAccess(now(), "true", "Always", "Button", " ");
+			mqttPublishAccess(now(), AccessResult::granted, String("N/A"), "Button", " ");
 			// door.activate();
 			activateRelay[0] = true;
 		}
@@ -279,16 +289,21 @@ void ICACHE_RAM_ATTR loop()
 	// 		relayGreen->deactivate();
 	// 	}
 
-	if (formatreq)
-	{
-#ifdef DEBUG
-		Serial.println(F("[ WARN ] Factory reset initiated..."));
-#endif
+	if (formatreq) {
+		DEBUG_SERIAL.println(F("[ WARN ] Factory reset initiated..."));
 		SPIFFS.end();
 		ws.enable(false);
 		SPIFFS.format();
 		ESP.restart();
 	}
+
+	if (networkFirstUp) {
+		networkFirstUp = false;
+		Serial.println("[ INFO ] Trying to setup NTP Server");
+		NTP.Ntp(config.ntpServer, config.timeZone, config.ntpInterval * 60);
+	}
+
+	uptimeSeconds = NTP.getUptimeSec();
 
 	if (config.autoRestartIntervalSeconds > 0 && uptimeSeconds > config.autoRestartIntervalSeconds)
 	{
@@ -299,9 +314,13 @@ void ICACHE_RAM_ATTR loop()
 	if (shouldReboot)
 	{
 		writeEvent("INFO", "sys", "System is going to reboot", "");
+		if (config.mqttEnabled and mqttClient.connected()) {
+			mqttPublishShutdown(now(), uptimeSeconds);
+		}
 		SPIFFS.end();
 		ESP.restart();
 	}
+
 
 	if (WiFi.isConnected())
 	{
@@ -317,25 +336,28 @@ void ICACHE_RAM_ATTR loop()
 	// don't try connecting to WiFi when waiting for pincode
 	if (doEnableWifi == true && keyTimer == 0)
 	{
+		doEnableWifi = false;
 		if (!WiFi.isConnected())
 		{
 			enableWifi();
 			writeEvent("INFO", "wifi", "Enabling WiFi", "");
-			doEnableWifi = false;
 		}
 	}
 
-	if (config.mqttEnabled && mqttClient.connected())
-	{
-		if ((unsigned)now() > nextbeat)
-		{
-			mqttPublishHeartbeat(now(), uptimeSeconds);
-			nextbeat = (unsigned)now() + config.mqttInterval;
-#ifdef DEBUG
-			Serial.print("[ INFO ] Nextbeat=");
-			Serial.println(nextbeat);
-#endif
+	
+
+	if (config.mqttEnabled) {
+		if (mqttClient.connected()) {
+			if ((unsigned)now() > nextbeat)
+			{
+				mqttPublishHeartbeat(now(), uptimeSeconds);
+				nextbeat = (unsigned)now() + config.mqttInterval;
+				DEBUG_SERIAL.print("[ INFO ] Nextbeat=");
+				DEBUG_SERIAL.println(nextbeat);
+			}
+			processMqttQueue();
+		} else if (WiFi.isConnected() && !mqttReconnectTimer.active()) {
+			mqttReconnectTimer.once(20, connectToMqtt);
 		}
-		processMqttQueue();
 	}
 }

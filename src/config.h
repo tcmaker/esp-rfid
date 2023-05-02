@@ -36,16 +36,18 @@ struct Config {
     uint8_t ledwaitingpin = 255;
     int lockType[MAX_NUM_RELAYS];
     uint8_t maxOpenDoorTime = 0;
+
     bool mqttEnabled = false;
-    bool mqttEvents = false;	  // Sends events over MQTT disables SPIFFS file logging
     bool mqttHA = false; // Sends events over simple MQTT topics and AutoDiscovery
+    bool mqttEvents = false;	  // Sends events over MQTT disables SPIFFS file logging
     char *mqttHost = NULL;
-    unsigned long mqttInterval = 180; // Add to GUI & json config
-    char *mqttPass = NULL;
     int mqttPort;
+    char *mqttUser = NULL;
+    char *mqttPass = NULL;
     char *mqttTopic = NULL;
     bool mqttAutoTopic = false;
-    char *mqttUser = NULL;
+    unsigned long mqttInterval = 180; // Add to GUI & json config
+
     bool networkHidden = false;
     char *ntpServer = NULL;
 	int ntpInterval = 0;

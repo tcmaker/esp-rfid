@@ -1,3 +1,7 @@
+#define DEBUG_SERIAL if(DEBUG)Serial
+
+
+
 void setEnableWifi()
 {
 	doEnableWifi = true;
@@ -5,14 +9,18 @@ void setEnableWifi()
 
 void onWifiConnect(const WiFiEventStationModeConnected &event)
 {
-#ifdef DEBUG
-	Serial.println(F("[ INFO ] WiFi STA Connected"));
-#endif
-	mqttReconnectTimer.detach();
-	if (!wifiReconnectTimer.active() && !config.fallbackMode)
-	{
-		wifiReconnectTimer.once(300, setEnableWifi);
-	}
+	// wifiReconnectTimer.detach();
+	DEBUG_SERIAL.println(F("[ DEBUG ] Wi-Fi STA connected"));
+
+	String data = event.ssid;
+	// data += " " + WiFi.localIP().toString();
+	writeEvent("INFO", "wifi", "WiFi is connected", data);
+
+	// mqttReconnectTimer.detach();
+	// if (!wifiReconnectTimer.active() && !config.fallbackMode)
+	// {
+	// 	wifiReconnectTimer.once(300, setEnableWifi);
+	// }
 	ledWifiOff();
 }
 
@@ -22,25 +30,27 @@ void onWifiDisconnect(const WiFiEventStationModeDisconnected &event)
 	{
 		return;
 	}
-#ifdef DEBUG
-	Serial.println(F("[ INFO ] WiFi STA Disconnected"));
-#endif
+	DEBUG_SERIAL.println(F("[ DEBUG ] Wi-Fi STA disconnected"));
 	mqttReconnectTimer.detach();
-	disconnectMqtt();
-	if (!wifiReconnectTimer.active() && !config.fallbackMode)
+	// disconnectMqtt();
+	if (!wifiReconnectTimer.active())
 	{
-		wifiReconnectTimer.once(300, setEnableWifi);
+		wifiReconnectTimer.once(10, setEnableWifi);
 	}
 	ledWifiOff();
 }
 
 void onWifiGotIP(const WiFiEventStationModeGotIP &event)
 {
-#ifdef DEBUG
-	Serial.println("[ INFO ] WiFi IP Connected");
-#endif
+	String data = WiFi.localIP().toString();
+	DEBUG_SERIAL.printf("[ DEBUG ] Wi-Fi IP address: %s\n", data.c_str());
 	wifiReconnectTimer.detach();
+	// Serial.println("[ INFO ] Trying to setup NTP Server");
+	// NTP.Ntp(config.ntpServer, config.timeZone, config.ntpInterval * 60);
+	Serial.printf("[ INFO ] Trying to connect to MQTT server (%s)\n", config.mqttHost);
+	connectToMqtt();
 	ledWifiOn();
+	networkFirstUp = true;
 }
 
 bool ICACHE_FLASH_ATTR startAP(IPAddress apip, IPAddress apsubnet, bool hidden, const char *ssid, const char *password = NULL)
@@ -107,6 +117,89 @@ void ICACHE_FLASH_ATTR fallbacktoAPMode()
 #endif
 	}
 }
+
+bool ICACHE_FLASH_ATTR setupSTA(const char *ssid, const char *password,
+								  byte bssid[6]) {
+	bool useBSSID = false;
+
+	WiFi.persistent(false);
+	WiFi.mode(WIFI_STA);
+
+	if (!config.dhcpEnabled)
+	{
+		WiFi.config(config.ipAddress, config.gatewayIp, config.subnetIp, config.dnsIp);
+		DEBUG_SERIAL.println(F("[ DEBUG ] DHCP client disabled"));
+	}
+
+	DEBUG_SERIAL.print(F("[ INFO ] Connecting to Wi-Fi, SSID: "));
+	DEBUG_SERIAL.println(ssid);
+	DEBUG_SERIAL.print(F("[ INFO ] WiFi BSSID: "));
+
+	for (int i = 0; i < 6; i++)
+	{
+		DEBUG_SERIAL.print(bssid[i]);
+
+		if (i < 5) {
+			DEBUG_SERIAL.print(F(":"));
+		} else {
+			// DEBUG_SERIAL.println();
+		}
+
+		if (bssid[i] != 0)
+			useBSSID = true;
+	}
+
+	if (useBSSID)
+	{
+		DEBUG_SERIAL.println(F(" (BSSID locked)"));
+		WiFi.begin(ssid, password, 0, bssid);
+	}
+	else
+	{
+		DEBUG_SERIAL.println(F(" (any BSSID)"));
+		WiFi.begin(ssid, password);
+	}
+
+// 	unsigned long now = millis();
+// 	uint8_t timeout = 15; // define when to time out in seconds
+// 	do
+// 	{
+		// ledWifiStatus();
+// 		delay(500);
+// #ifdef DEBUG
+// 		if (!WiFi.isConnected())
+// 			Serial.print(F("."));
+// #endif
+// 		if (WiFi.isConnected())
+// 			break;
+// 	} while (millis() - now < timeout * 1000);
+
+	// We now out of the while loop, either time is out or we connected. check what happened
+// 	if (WiFi.isConnected())
+// 	{
+// 		String data = ssid;
+// 		data += " " + WiFi.localIP().toString();
+// 		writeEvent("INFO", "wifi", "WiFi is connected", data);
+// 		Serial.println("[ INFO ] Trying to setup NTP Server");
+// 		NTP.Ntp(config.ntpServer, config.timeZone, config.ntpInterval * 60);
+// 		connectToMqtt();
+// 		return true;
+// 	}
+// 	else
+// 	{
+// #ifdef DEBUG
+// 		Serial.println();
+// 		Serial.println(F("[ WARN ] Couldn't connect in time"));
+// #endif
+		// if (!config.fallbackMode)
+		// {
+		// 	wifiReconnectTimer.once(300, setEnableWifi);
+		// }
+		// return false;
+	// }
+	return true;
+}
+
 
 // Try to connect Wi-Fi
 bool ICACHE_FLASH_ATTR connectSTA(const char *ssid, const char *password, byte bssid[6])
@@ -194,9 +287,7 @@ void ICACHE_FLASH_ATTR disableWifi()
 	wiFiUptimeMillis = 0;
 	WiFi.disconnect(true);
 	WiFi.softAPdisconnect(true);
-#ifdef DEBUG
-	Serial.println(F("Turn wifi off."));
-#endif
+	DEBUG_SERIAL.println(F("[ DEBUG ] Wi-Fi disabled"));
 }
 
 void ICACHE_FLASH_ATTR enableWifi()
@@ -208,11 +299,12 @@ void ICACHE_FLASH_ATTR enableWifi()
 	}
 	else
 	{
-		bool connected = connectSTA(config.ssid, config.wifiPassword, config.bssid);
-		if (!connected && config.fallbackMode)
-		{
-			fallbacktoAPMode();
-		}
+		wifiReconnectTimer.once(20, fallbacktoAPMode);
+		setupSTA(config.ssid, config.wifiPassword, config.bssid);
+		// if (!connected && config.fallbackMode)
+		// {
+		// 	fallbacktoAPMode();
+		// }
 	}
 }
 

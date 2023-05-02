@@ -3,13 +3,15 @@
 
 #include "door.h"
 
+#define DEBUG_SERIAL if(DEBUG)Serial
+
 void debugPrint(const char* info) {
   Serial.printf("milliseconds: %lu - %s\n", millis(), info);
 }
 
 Door::Door(Relay *lock, Bounce *statusPin)
   : maxOpenTime(10)
-  , state(DoorState::start)
+  , state(DoorState::unlocked)
   , lastMilli(millis())
 {
   Door(statusPin, lock);
@@ -17,7 +19,7 @@ Door::Door(Relay *lock, Bounce *statusPin)
 
 Door::Door(Bounce *statusPin, Relay *lock, Relay *indicator, Relay *alarm, Relay *open, Relay *close) 
   : maxOpenTime(0)
-  , state(DoorState::start)
+  , state(DoorState::unlocked)
   , lastMilli(millis())
 {
   relays[RELAY_LOCK] = lock;
@@ -48,6 +50,15 @@ void Door::begin()
   relayAlarm = relays[RELAY_ALARM];
   relayOpen = relays[RELAY_OPEN];
   relayClose = relays[RELAY_CLOSE];
+
+  if (!statusPin) {
+    state = secure;
+  } else if (statusPin->read() == 1) {
+    Serial.printf("Door open, assuming previously activated...\n");
+    activate();
+  } else if (statusPin->read() == 0) {
+    state = locking;
+  }
 }
 
 int Door::status()
@@ -61,17 +72,13 @@ int Door::status()
  */
 void Door::activate()
 {
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu - door activating\n", millis());
-#endif
+  DEBUG_SERIAL.printf("milliseconds: %lu - door activating\n", millis());
   state = unlocked;
   lastMilli = millis();
   relayUnlock->activate();
   if (relayInd)
     relayInd->activate();
-#ifdef DEBUG
-      Serial.printf("milliseconds: %lu - door unlocked\n", millis());
-#endif
+  DEBUG_SERIAL.printf("milliseconds: %lu - door unlocked\n", millis());
 }
 
 bool Door::update()
@@ -94,21 +101,6 @@ bool Door::update()
 
   switch (state)
   {
-  case start:
-    if (!statusPin)
-    {
-      state = secure;
-    }
-    else if (statusPin->read() == 1)
-    {
-      Serial.printf("Door open, assuming previously activated...\n");
-      activate();
-    } 
-    else if (statusPin->read() == 0)
-    {
-      state = locking;
-    }
-    break;
   case secure: // (closed and locked)
     if (relayAlarm && relayAlarm->state == Relay::OperationState::active)
     {
@@ -134,6 +126,7 @@ bool Door::update()
       debugPrint("tamper detected");
     }
     break;
+
   /////////////////////////////////////////////
 
   case unlocked: // Door unlocked
@@ -177,10 +170,10 @@ bool Door::update()
   case locking: // intermediate state: open/unlocked to locked
     if (this->statusPin->read() == 1) // door opened before lock succeeded
     {
-               // unlock door, go back to open state
+      // unlock door, go back to open state
       // do not reset lastMillis
       relayUnlock->hold();
-      if (relayInd && relayInd->override == Relay::OverrideState::normal)
+      if (relayInd)
         relayInd->hold();
 
       state = open;

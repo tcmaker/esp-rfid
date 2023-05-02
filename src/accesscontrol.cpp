@@ -1,11 +1,13 @@
 #include "accesscontrol.h"
 
+#define DEBUG_SERIAL if(DEBUG)Serial
+
 TCMWiegandClass TCMWiegand;
 AccessControlClass AccessControl;
 
-bool TCMWiegandClass::idle;
-unsigned long TCMWiegandClass::lastEdge_u;
-unsigned long TCMWiegandClass::lastLoop_m;
+bool TCMWiegandClass::idle = true;
+unsigned long TCMWiegandClass::lastEdge_u = 0;
+unsigned long TCMWiegandClass::lastLoop_m = 0;
 ProxReaderInfo* TCMWiegandClass::reader;
 
 /**
@@ -22,11 +24,13 @@ ProxReaderInfo* TCMWiegandClass::reader;
  */
 ICACHE_RAM_ATTR void TCMWiegandClass::handleD0() {
 	unsigned long nowMicros = micros();
+	unsigned long nowMillis = millis();
 	if (idle || nowMicros - lastEdge_u > WIEGAND_MIN_TIME) {
 		if (reader != NULL) {
 			reader->ISR_Data0();
 		}
 		lastEdge_u =  nowMicros;
+		lastLoop_m = nowMillis;
 		idle = false;
 	}
 }
@@ -38,11 +42,17 @@ ICACHE_RAM_ATTR void TCMWiegandClass::handleD0() {
  */
 ICACHE_RAM_ATTR void TCMWiegandClass::handleD1() {
 	unsigned long nowMicros = micros();
+	unsigned long nowMillis = millis();
 	if (idle || nowMicros - lastEdge_u > WIEGAND_MIN_TIME) {
 		if (reader != NULL) {
+			if (reader->bitCount >= MAX_READ_BITS) {
+				DEBUG_SERIAL.println("[ WARN ] Read max bit count exceeded.");
+				reader->bitCount = MAX_READ_BITS - 1;
+			}
 			reader->ISR_Data1();
 		}
 		lastEdge_u = nowMicros;
+		lastLoop_m = nowMillis;
 		idle = false;
 	}
 }
@@ -79,38 +89,53 @@ AccessControlClass::AccessControlClass() {
 }
 
 void AccessControlClass::loop()  {
-	switch (state)
-	{
+	ControlState nextState = wait_read;
+	switch (state) {
 	case ControlState::lookup_local:
 		if (uid.isEmpty()) {
-			#ifdef DEBUG
-				Serial.println("");
-				Serial.println(F("[ WARN ] state(lookup_local): uid was empty"));
-			#endif
+			DEBUG_SERIAL.println(F("[ WARN ] state(lookup_local): uid was empty"));
 			state = ControlState::wait_read;
 			return;
-		} else if (lookupUID_local()) {
-			state = ControlState::process_record;
-		} else {
-			state = ControlState::lookup_remote;
+		} 
+
+		nextState = lookupUID_local();
+		if (nextState == lookup_remote) {
 			lastMilli = millis();
-			this->remoteLookup(uid);
+
+			// kick off remote lookup, if available
+			if (this->remoteLookup) {
+				this->remoteLookup(uid);
+			} else {
+				nextState = ControlState::cool_down;
+				this->accessDenied(AccessResult::unrecognized,
+						   		   String("local DB only"),
+						           this->uid,
+						   		   String("N/A"));
+			}
 		}
+		state = nextState;
 		break;
 	case ControlState::lookup_remote:
+		// jsonRecord would get populated via MQTT, which can then be processed
 		if (!jsonRecord.isNull()) {
 			state = ControlState::process_record;
 		} else if (millis() - lastMilli > LOOKUP_DELAY) {
-			this->accessDenied("unrecognized");
+			this->accessDenied(AccessResult::unrecognized,
+								String("remote DB timeout"),
+								this->uid,
+								String("N/A"));
 			state = ControlState::cool_down;
 		}
 		break;
 	case ControlState::process_record:
-		this->checkUserRecord();
-		// state is updated by this function
+		lastMilli = millis();
+		nextState = this->checkUserRecord();
+		state = nextState;
 		break;
-	case ControlState::grant_access:
-
+	case ControlState::cool_down:
+		if (millis() - lastMilli > 1500) {
+			state = ControlState::wait_read;
+		}
 		break;
 	case ControlState::wait_read:
 	default:
@@ -118,7 +143,7 @@ void AccessControlClass::loop()  {
 	}
 }
 
-bool AccessControlClass::lookupUID_local() {
+ControlState AccessControlClass::lookupUID_local() {
 	File f = SPIFFS.open("/P/" + uid, "r");
 
 	if (f) {		// user exists
@@ -130,35 +155,55 @@ bool AccessControlClass::lookupUID_local() {
 		if (error) {
 			state = ControlState::wait_read;
 			jsonRecord.clear();
-#ifdef DEBUG
-			Serial.println("");
-			Serial.println(F("[ WARN ] Failed to parse User Data"));
-#endif
-			return false;
+			DEBUG_SERIAL.println(F("[ WARN ] Failed to parse User Data"));
+			return ControlState::lookup_remote;
 		}
 
-// 		if (config.pinCodeRequested) {
-// 		}
+		// Original code has pincode support--may want to re-add that here...
+		// if (config.pinCodeRequested) {
+		// 	if(this->setupReadPinCode) {
+		// 		this->setupReadPinCode();
+		// 		return ControlState::check_pin;
+		// 	}
+		// }
 
-		return true;
+		// record found and deserialized
+		return ControlState::process_record;
 	} else {
-		return false;
+		// No file found, then try remote lookup.
+		return ControlState::lookup_remote;
 	}
 }
 
-void AccessControlClass::checkUserRecord() {
-	if (jsonRecord.containsKey("is_banned") && (jsonRecord["is_banned"] > 0)) {
-		state = ControlState::cool_down;
-		this->accessDenied("banned");
-	} else if (jsonRecord["validuntil"] < now()) { // missing value -> expired
-		state = ControlState::cool_down;
-		this->accessDenied("expired");
-	} else if (jsonRecord["validsince"] > now()) {
-		state = ControlState::cool_down;
-		this->accessDenied("not_yet_valid");
+ControlState AccessControlClass::checkUserRecord() {
+	if (jsonRecord.containsKey("is_banned") && (jsonRecord["is_banned"].as<int>() > 0)) {
+		this->accessDenied(AccessResult::banned,
+						   jsonRecord["is_banned"].as<String>(),
+						   this->uid,
+						   jsonRecord["person"] | String("N/A"));
+		return ControlState::cool_down;
+	} else if (jsonRecord["validuntil"] < now()) { // missing value => 0 => expired
+		this->accessDenied(AccessResult::expired,
+		                   jsonRecord["validuntil"] | String("validuntil is unset"),
+						   this->uid,
+						   jsonRecord["person"] | String("N/A"));
+		return ControlState::cool_down;
+	} else if (jsonRecord["validsince"] > now()) { // missing value => 0 => granted
+		this->accessDenied(AccessResult::not_yet_valid,
+		                   jsonRecord["validsince"],
+						   this->uid,
+						   jsonRecord["person"] | String("N/A"));
+		return ControlState::cool_down;
 	} else {
-		state = ControlState::wait_read;
-		this->accessGranted("granted");
+		String validsince = "validsince is unset";
+		if (jsonRecord.containsKey("validsince")) {
+			validsince = jsonRecord["validsince"].as<String>();
+		}
+		this->accessGranted(AccessResult::granted,
+		                   validsince,
+						   this->uid,
+						   jsonRecord["person"] | String("N/A"));
+		return ControlState::wait_read;
 	}
 }
 
@@ -170,42 +215,35 @@ void AccessControlClass::checkUserRecord() {
  * @param reader 
  */
 void readHandler(ProxReaderInfo* reader) {
-	Serial.print(F("Fob read: "));
-	Serial.print(reader->facilityCode);
-	Serial.print(F(":"));
-	Serial.print(reader->cardCode);
-	Serial.print(F(" ("));
-	Serial.print(reader->bitCount);
-	Serial.println(F(")"));
+	DEBUG_SERIAL.print(F("Fob read: "));
+	DEBUG_SERIAL.print(reader->facilityCode);
+	DEBUG_SERIAL.print(F(":"));
+	DEBUG_SERIAL.print(reader->cardCode);
+	DEBUG_SERIAL.print(F(" ("));
+	DEBUG_SERIAL.print(reader->bitCount);
+	DEBUG_SERIAL.println(F(")"));
 	if (AccessControl.state == ControlState::wait_read) {
 		if (reader->facilityCode == 0) {
-			#ifdef DEBUG
-				Serial.println(F("[ INFO ] Bad read: facility code was zero"));
-			#endif
+			DEBUG_SERIAL.println(F("[ INFO ] Bad read: facility code was zero"));
 			return;
 		}
 		unsigned long code = reader->facilityCode << 16 | reader->cardCode;
 		
-		String uid = String(code, DEC);
+		String uid = String(code, HEX);
 		// String type = String(reader->bitCount, DEC);
 
-		#ifdef DEBUG
-			Serial.print(F("[ INFO ] PICC's UID: "));
-			Serial.println(uid);
-		#endif
+		DEBUG_SERIAL.print(F("[ INFO ] PICC's UID: "));
+		DEBUG_SERIAL.println(uid);
+
 		// Setup AccessControl to handle authorization
+		// this function is called from loop(), so state is only changed in main thread
 		AccessControl.uid = uid;
 		AccessControl.state = ControlState::lookup_local;
 	} else {
-		#ifdef DEBUG
-			Serial.println(F("[ WARN ] AccessControl received read while still handling last read"));
-		#endif
+		// any other state results in the read being thrown away
+		DEBUG_SERIAL.println(F("[ WARN ] AccessControl received read while still handling last read"));
 	return;
 	}
-}
-
-void retrieveRecord(String uid) {
-	return;
 }
 
 int weekdayFromMonday(int weekdayFromSunday) {
