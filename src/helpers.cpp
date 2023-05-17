@@ -1,9 +1,11 @@
 #include "helpers.h"
 
-String ICACHE_FLASH_ATTR printIP(IPAddress adress)
-{
-	return (String)adress[0] + "." + (String)adress[1] + "." + (String)adress[2] + "." + (String)adress[3];
-}
+boot_info_t bootInfo;
+
+// String ICACHE_FLASH_ATTR printIP(IPAddress adress)
+// {
+// 	return (String)adress[0] + "." + (String)adress[1] + "." + (String)adress[2] + "." + (String)adress[3];
+// }
 
 void ICACHE_FLASH_ATTR parseBytes(const char *str, char sep, byte *bytes, int maxBytes, int base)
 {
@@ -19,27 +21,27 @@ void ICACHE_FLASH_ATTR parseBytes(const char *str, char sep, byte *bytes, int ma
 	}
 }
 
-String ICACHE_FLASH_ATTR generateUid(int type, int length)
-{
+// String ICACHE_FLASH_ATTR generateUid(int type, int length)
+// {
 
-	// nardev: this could be implemented in config, to choose default type of UID;
+// 	// nardev: this could be implemented in config, to choose default type of UID;
 
-	String uid;
-	if (type)
-	{
-		uid = now();
-	}
-	else
-	{
-		// char *characters = "abcdefghijklmnopqrstuvwxyz0123456789"; small letters, ordered
-		// char *characters = "ABSDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; uppercase, ordered
-		const char *characters = "SN07YXRGP9DBOUVLJK6IEH1FWMT8Q4SA3Z52"; // randomized, uppercase
+// 	String uid;
+// 	if (type)
+// 	{
+// 		uid = now();
+// 	}
+// 	else
+// 	{
+// 		// char *characters = "abcdefghijklmnopqrstuvwxyz0123456789"; small letters, ordered
+// 		// char *characters = "ABSDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; uppercase, ordered
+// 		const char *characters = "SN07YXRGP9DBOUVLJK6IEH1FWMT8Q4SA3Z52"; // randomized, uppercase
 
-		for (int i = 0; i < length; i++)
-		{
-			uid = uid + characters[random(0, 36)];
-		}
-	}
+// 		for (int i = 0; i < length; i++)
+// 		{
+// 			uid = uid + characters[random(0, 36)];
+// 		}
+// 	}
 
-	return uid;
-}
+// 	return uid;
+// }

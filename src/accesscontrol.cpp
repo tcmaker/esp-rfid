@@ -45,6 +45,7 @@ ICACHE_RAM_ATTR void TCMWiegandClass::handleD1() {
 	unsigned long nowMillis = millis();
 	if (idle || nowMicros - lastEdge_u > WIEGAND_MIN_TIME) {
 		if (reader != NULL) {
+			// ISR_Data1 does not do bounds checking
 			if (reader->bitCount >= MAX_READ_BITS) {
 				DEBUG_SERIAL.println("[ WARN ] Read max bit count exceeded.");
 				reader->bitCount = MAX_READ_BITS - 1;
@@ -88,8 +89,24 @@ AccessControlClass::AccessControlClass() {
 	state = wait_read;
 }
 
+/* loop() should be called by the main thread loop
+ * This breaks up the process of taking a Wiegand ID, looking up the ID
+ * in the local file system and making choice whether to fire the granted
+ * or denied call back.
+ * If the record does not exist or if the record results in a denial other than
+ * banned, then the state machine will delay for a short period (LOOKUP_DELAY) 
+ * to see if a MQTT message arrives that changes the decision.
+ * The process is broken up across multiple states in case any of these
+ * steps (flash access, JSON deserialization, remote lookup, etc.) take a long time and
+ * would cause other threads to block.
+ * */
 void AccessControlClass::loop()  {
 	ControlState nextState = wait_read;
+	static AccessResult result = AccessResult::unrecognized;
+	// Default state is wait_read.
+	// A Wiegand scan will result in the `state` being updated to
+	// lookup_local by readHandler()
+
 	switch (state) {
 	case ControlState::lookup_local:
 		if (uid.isEmpty()) {
@@ -97,40 +114,63 @@ void AccessControlClass::loop()  {
 			state = ControlState::wait_read;
 			return;
 		} 
+		jsonRecord.clear();
 
-		nextState = lookupUID_local();
-		if (nextState == lookup_remote) {
+		if (lookupUID_local()) {
+			// local record does not exist
 			lastMilli = millis();
+			result = AccessResult::unrecognized;
 
-			// kick off remote lookup, if available
-			if (this->remoteLookup) {
-				this->remoteLookup(uid);
+			if (this->lookupRemote) {
+				// kick off remote lookup, if available
+				nextState = ControlState::wait_remote;
+				this->lookupRemote(uid, &jsonRecord);
 			} else {
+				// if remote lookup is not setup, then handle the denial now
 				nextState = ControlState::cool_down;
-				this->accessDenied(AccessResult::unrecognized,
-						   		   String("local DB only"),
-						           this->uid,
-						   		   String("N/A"));
+				handleResult(result);
 			}
+		} else {
+			nextState = ControlState::process_record_local;
 		}
 		state = nextState;
 		break;
-	case ControlState::lookup_remote:
-		// jsonRecord would get populated via MQTT, which can then be processed
-		if (!jsonRecord.isNull()) {
-			state = ControlState::process_record;
-		} else if (millis() - lastMilli > LOOKUP_DELAY) {
-			this->accessDenied(AccessResult::unrecognized,
-								String("remote DB timeout"),
-								this->uid,
-								String("N/A"));
+	case ControlState::wait_remote:
+		// if (this->newRecord) {
+		// 	// If an new record comes in, newRecord will be set to true
+		// 	nextState = ControlState::process_record_remote;
+		// } else
+		// remote lookup should set state to process_record_remote
+		if (millis() - lastMilli > LOOKUP_DELAY) {
+			handleResult(result);
 			state = ControlState::cool_down;
 		}
 		break;
-	case ControlState::process_record:
-		lastMilli = millis();
-		nextState = this->checkUserRecord();
+	case ControlState::process_record_local:
+		result = this->checkUserRecord();
+		if (result != granted && result != banned) {
+			// local look up did not result in granted or banned
+			lastMilli = millis();
+			if (this->lookupRemote) {
+				nextState = ControlState::wait_remote;
+				this->lookupRemote(uid, &jsonRecord);
+			} else {
+				nextState = ControlState::cool_down;
+				handleResult(result);
+			}
+		} else {
+			nextState = ControlState::cool_down;
+			handleResult(result);
+		}
 		state = nextState;
+		break;
+	case ControlState::process_record_remote:
+		// we get here is the remote lookup successfully retrieved a JSON record
+		lastMilli = millis();
+		// result is static
+		result = this->checkUserRecord();
+		handleResult(result);
+		state = ControlState::cool_down;
 		break;
 	case ControlState::cool_down:
 		if (millis() - lastMilli > 1500) {
@@ -143,7 +183,7 @@ void AccessControlClass::loop()  {
 	}
 }
 
-ControlState AccessControlClass::lookupUID_local() {
+int AccessControlClass::lookupUID_local() {
 	File f = SPIFFS.open("/P/" + uid, "r");
 
 	if (f) {		// user exists
@@ -153,10 +193,11 @@ ControlState AccessControlClass::lookupUID_local() {
 		f.close();
 		auto error = deserializeJson(jsonRecord, buf.get());
 		if (error) {
-			state = ControlState::wait_read;
+			// state = ControlState::wait_read;
 			jsonRecord.clear();
 			DEBUG_SERIAL.println(F("[ WARN ] Failed to parse User Data"));
-			return ControlState::lookup_remote;
+			return 2;
+			// return ControlState::wait_remote;
 		}
 
 		// Original code has pincode support--may want to re-add that here...
@@ -168,43 +209,88 @@ ControlState AccessControlClass::lookupUID_local() {
 		// }
 
 		// record found and deserialized
-		return ControlState::process_record;
+		return 0;
+		// return ControlState::process_record_local;
 	} else {
 		// No file found, then try remote lookup.
-		return ControlState::lookup_remote;
+		return 1;
+		// return ControlState::wait_remote;
 	}
 }
 
-ControlState AccessControlClass::checkUserRecord() {
+/* checkUserRecord() looks at the current jsonRecord and implements
+*  the decision logic.
+*/
+AccessResult AccessControlClass::checkUserRecord() {
 	if (jsonRecord.containsKey("is_banned") && (jsonRecord["is_banned"].as<int>() > 0)) {
-		this->accessDenied(AccessResult::banned,
-						   jsonRecord["is_banned"].as<String>(),
-						   this->uid,
-						   jsonRecord["person"] | String("N/A"));
-		return ControlState::cool_down;
-	} else if (jsonRecord["validuntil"] < now()) { // missing value => 0 => expired
-		this->accessDenied(AccessResult::expired,
-		                   jsonRecord["validuntil"] | String("validuntil is unset"),
-						   this->uid,
-						   jsonRecord["person"] | String("N/A"));
-		return ControlState::cool_down;
+		return AccessResult::banned;
+	} 
+	
+	if (jsonRecord["validuntil"] < now()) { // missing value => 0 => expired
+		return AccessResult::expired;
 	} else if (jsonRecord["validsince"] > now()) { // missing value => 0 => granted
-		this->accessDenied(AccessResult::not_yet_valid,
-		                   jsonRecord["validsince"],
-						   this->uid,
-						   jsonRecord["person"] | String("N/A"));
-		return ControlState::cool_down;
+		return AccessResult::not_yet_valid;
 	} else {
-		String validsince = "validsince is unset";
-		if (jsonRecord.containsKey("validsince")) {
-			validsince = jsonRecord["validsince"].as<String>();
-		}
-		this->accessGranted(AccessResult::granted,
-		                   validsince,
-						   this->uid,
-						   jsonRecord["person"] | String("N/A"));
-		return ControlState::wait_read;
+		return AccessResult::granted;
 	}
+}
+
+/**
+ * @brief Uses the result determined from checkUserRecord() and current state
+ * to prepare and call the appropriate callback function.
+ * 
+ * @param result AccessResult
+ */
+void AccessControlClass::handleResult(const AccessResult result) {
+	String detail("N/A");
+	String name;
+
+	name = jsonRecord["person"] | "N/A";
+
+	// looks at result and state to indicate why the result occured.
+	switch (result)
+	{
+	case unrecognized:
+		detail = "unrecognized";
+		break;
+	case banned:
+		detail = jsonRecord["is_banned"] | jsonRecord["is_banned"].as<String>();
+		break;
+	case expired:
+		detail = jsonRecord["validuntil"] | "unset";
+		break;
+	case not_yet_valid:
+		/* FALL THROUGH */
+	case granted:
+		detail = jsonRecord["validsince"] | "unset";
+		break;
+	default:
+		detail = "unhandled lookup result";
+		break;
+	}
+
+	if (state == lookup_local || state == process_record_local) {
+		detail += " (local DB)";
+	} else if (state == wait_remote) {
+		detail += " (remote DB timeout)";
+	} else {
+		detail += " (remote DB)";
+	}
+
+	if (result == granted) {
+		this->accessGranted(result,
+		                    detail,
+						    this->uid,
+						    name);
+		// return ControlState::wait_read;
+	} else {
+		this->accessDenied(result,
+						   detail,
+						   this->uid,
+						   name);
+		// return ControlState::cool_down;
+	}
+
 }
 
 /**
@@ -222,6 +308,8 @@ void readHandler(ProxReaderInfo* reader) {
 	DEBUG_SERIAL.print(F(" ("));
 	DEBUG_SERIAL.print(reader->bitCount);
 	DEBUG_SERIAL.println(F(")"));
+
+	// AccessControl state machine must be in wait_read state to avoid race conditions
 	if (AccessControl.state == ControlState::wait_read) {
 		if (reader->facilityCode == 0) {
 			DEBUG_SERIAL.println(F("[ INFO ] Bad read: facility code was zero"));
@@ -232,11 +320,12 @@ void readHandler(ProxReaderInfo* reader) {
 		String uid = String(code, HEX);
 		// String type = String(reader->bitCount, DEC);
 
-		DEBUG_SERIAL.print(F("[ INFO ] PICC's UID: "));
+		DEBUG_SERIAL.print(F("[ INFO ] UID: "));
 		DEBUG_SERIAL.println(uid);
 
-		// Setup AccessControl to handle authorization
-		// this function is called from loop(), so state is only changed in main thread
+		// Setup AccessControl to handle authorization.
+		// The actual authorization is done in AccessControlClass::loop()
+		// via the main loop() thread.
 		AccessControl.uid = uid;
 		AccessControl.state = ControlState::lookup_local;
 	} else {

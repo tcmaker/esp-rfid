@@ -22,7 +22,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
  */
-#define VERSION "2.0.0-dev"
+
 
 #include "Arduino.h"
 #include <ESP8266WiFi.h>
@@ -63,6 +63,7 @@ AsyncWebSocket ws("/ws");
 unsigned long cooldown = 0;
 unsigned long currentMillis = 0;
 unsigned long deltaTime = 0;
+bool flagMQTTSendUserList = false;
 bool doEnableWifi = false;
 bool formatreq = false;
 const char *httpUsername = "admin";
@@ -73,7 +74,7 @@ uint8_t lastDoorState = 0;
 uint8_t lastTamperState = 0;
 unsigned long openDoorMillis = 0;
 
-unsigned long nextbeat = 0;
+unsigned long lastbeat = 0;
 unsigned long previousLoopMillis = 0;
 unsigned long previousMillis = 0;
 bool shouldReboot = false;
@@ -111,9 +112,12 @@ bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
 #include "webserver.esp"
 #include "doorbell.esp"
 
+bool mqttSendUserList();
+
 void accessGranted_wrapper(AccessResult result, String detail, String credential, String name)
 {
 	DEBUG_SERIAL.printf("Granted: %s\n", detail.c_str());
+	DEBUG_SERIAL.printf("Wi-Fi: %d, MQTT: %d, Timer: %d\n", WiFi.isConnected(), mqttClient.connected(), mqttReconnectTimer.active());
 	mqttPublishAccess(now(), result, detail, credential, name);
 	door.activate();
 }
@@ -124,6 +128,8 @@ void accessDenied_wrapper(AccessResult result, String detail, String credential,
 	mqttPublishAccess(now(), result, detail, credential, name);
 }
 
+
+
 void ICACHE_FLASH_ATTR setup()
 {
 #ifdef DEBUG
@@ -131,7 +137,9 @@ void ICACHE_FLASH_ATTR setup()
 	Serial.println();
 
 	Serial.print(F("[ INFO ] ESP RFID v"));
-	Serial.println(VERSION);
+	Serial.println(bootInfo.version);
+	Serial.print(F("[ INFO ] ENV: "));
+	Serial.println(bootInfo.debug ? "DEBUG" : "PROD");
 
 	uint32_t realSize = ESP.getFlashChipRealSize();
 	uint32_t ideSize = ESP.getFlashChipSize();
@@ -154,8 +162,10 @@ void ICACHE_FLASH_ATTR setup()
 	}
 #endif
 
+	bootInfo.formatted = true;
 	if (!SPIFFS.begin())
 	{
+		bootInfo.formatted = false;
 		if (SPIFFS.format())
 		{
 			writeEvent("WARN", "sys", "Filesystem formatted", "");
@@ -169,8 +179,11 @@ void ICACHE_FLASH_ATTR setup()
 		}
 	}
 
-	bool configured = false;
-	configured = loadConfiguration();
+	if (!SPIFFS.info(bootInfo.fsinfo)) {
+		DEBUG_SERIAL.println(F("[ ERROR ] Failed to retrieve SPIFFS info"));
+	}
+
+	bootInfo.configured = loadConfiguration();
 
 	ws.setAuthentication("admin", config.httpPass);
 
@@ -227,7 +240,7 @@ void ICACHE_FLASH_ATTR setup()
 	
 	setupMqtt();
 	setupWebServer();
-	setupWifi(configured);
+	setupWifi(bootInfo.configured);
 	writeEvent("INFO", "sys", "System setup completed, running", "");
 }
 
@@ -348,16 +361,98 @@ void ICACHE_RAM_ATTR loop()
 
 	if (config.mqttEnabled) {
 		if (mqttClient.connected()) {
-			if ((unsigned)now() > nextbeat)
+			if ((unsigned long) now() - lastbeat > config.mqttInterval)
 			{
 				mqttPublishHeartbeat(now(), uptimeSeconds);
-				nextbeat = (unsigned)now() + config.mqttInterval;
+				lastbeat = (unsigned)now();
+				// + config.mqttInterval;
 				DEBUG_SERIAL.print("[ INFO ] Nextbeat=");
-				DEBUG_SERIAL.println(nextbeat);
+				DEBUG_SERIAL.println(lastbeat + config.mqttInterval);
 			}
 			processMqttQueue();
+			if (flagMQTTSendUserList) {
+				flagMQTTSendUserList = mqttSendUserList();
+			}
 		} else if (WiFi.isConnected() && !mqttReconnectTimer.active()) {
 			mqttReconnectTimer.once(20, connectToMqtt);
 		}
 	}
+}
+
+bool mqttSendUserList()
+{
+	static unsigned long count = 0;
+	static Dir *dir = nullptr;
+	static bool available;
+
+	// should this be a static document to avoid heap fragmentation?
+	DynamicJsonDocument root(4096);
+
+	FSInfo fsinfo;
+
+	unsigned long i = 0;
+
+	if (count == 0) {
+		// starting out, open filesystem
+		dir = new Dir;
+		*dir = SPIFFS.openDir("/P/");
+
+		// load first file
+		available = dir->next();
+		// otherwise filerecord is loaded from lass call
+	}
+
+	JsonArray users = root.createNestedArray("userlist");
+
+	while (available && i < 10)	{
+		++count;
+		++i;
+
+		JsonObject item = users.createNestedObject();
+
+		String uid = dir->fileName();
+		uid.remove(0, 3);  // remove "/P/" from filename
+		item["uid"] = uid;
+
+		File f = SPIFFS.open(dir->fileName(), "r");
+		size_t size = f.size();
+		item["filesize"] = (unsigned) size;
+
+		std::unique_ptr<char[]> buf(new char[size + 1]);
+		f.readBytes(buf.get(), size);
+		f.close();
+
+		// ensure buffer is null terminated
+		buf[size] = '\0';
+
+		// presume that file is already JSON
+		item["record"] = serialized(buf.get());
+
+		// prepare for next file
+		available = dir->next();
+	}
+
+	root["size"] = i;
+	root["index"] = count - i;
+
+	if (!available) {
+		// no next file, so we're done
+		// last json payload includes overall data
+		root["total"] = count;
+		SPIFFS.info(fsinfo);
+		root["flash_used"] = fsinfo.usedBytes;
+		root["flash_available"] = fsinfo.totalBytes - fsinfo.usedBytes;
+		root["complete"] = true;
+		// complete = true;
+		count = 0;
+		delete dir;
+		dir = nullptr;
+	} else {
+		root["complete"] = false;
+	}
+
+	root["json_memory_usage"] = root.memoryUsage();
+	mqttPublishEvent(&root, "notify/db/list");
+
+	return available;
 }

@@ -17,14 +17,16 @@ enum AccessResult {
     banned,
     expired,
     not_yet_valid,
+    time_not_valid,
     granted
 };
 
 enum ControlState {
     wait_read,
     lookup_local,
-    lookup_remote,
-    process_record,
+    wait_remote,
+    process_record_local,
+    process_record_remote,
     check_pin,
     // grant_access,
     // deny_access,
@@ -61,8 +63,8 @@ class AccessControlClass {
     AccessControlClass();
 
 
-    void (*lookupCredential)(JsonDocument* user);
-    void (*remoteLookup)(String scanned_id);
+    int (*lookupLocal)(const String uid, const JsonDocument* user);
+    void (*lookupRemote)(String uid, const JsonDocument* user);
     void (*accessDenied)(AccessResult result, String detail, String credential, String name);
     void (*accessGranted)(AccessResult result, String detail, String credential, String name);
 
@@ -73,8 +75,9 @@ class AccessControlClass {
 
     // void reset();
 
-    ControlState lookupUID_local();
-    ControlState checkUserRecord();
+    int lookupUID_local();
+    AccessResult checkUserRecord();
+    void handleResult(const AccessResult result);
 
     ControlState state;
 
@@ -89,6 +92,7 @@ class AccessControlClass {
         unsigned long validuntil;
     };
 
+    bool newRecord = false;
 	StaticJsonDocument<512> jsonRecord;
     UserRecord currentUser;
 

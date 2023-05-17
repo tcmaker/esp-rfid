@@ -83,7 +83,7 @@ void ICACHE_FLASH_ATTR setupWebServer() {
 		config.httpPass = strdup("admin");
 	}
 	server.on("/login", HTTP_GET, [](AsyncWebServerRequest *request) {
-		String remoteIP = printIP(request->client()->remoteIP());
+		String remoteIP = request->client()->remoteIP().toString();
 		if (!request->authenticate(httpUsername, config.httpPass)) {
 			writeEvent("WARN", "websrv", "New login attempt", remoteIP);
 			return request->requestAuthentication();
