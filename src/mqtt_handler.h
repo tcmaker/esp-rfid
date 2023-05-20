@@ -62,6 +62,8 @@ void deleteAllUserFiles();
 void deleteUserID(const char *uid);
 void addUserID(MqttMessage& message);
 
+extern void onNewRecord(const String uid, const JsonDocument& payload);
+
 extern AsyncMqttClient mqttClient;
 extern Ticker mqttReconnectTimer;
 extern boot_info_t bootInfo;

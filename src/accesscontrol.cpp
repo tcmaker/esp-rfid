@@ -122,50 +122,54 @@ void AccessControlClass::loop()  {
 			result = AccessResult::unrecognized;
 
 			if (this->lookupRemote) {
-				// kick off remote lookup, if available
+				// setup remote lookup, if available
 				nextState = ControlState::wait_remote;
-				this->lookupRemote(uid, &jsonRecord);
+				this->lookupRemote(uid);
+				// handleResult(result);
 			} else {
 				// if remote lookup is not setup, then handle the denial now
 				nextState = ControlState::cool_down;
-				handleResult(result);
+				// handleResult(result);
 			}
 		} else {
-			nextState = ControlState::process_record_local;
+			state = ControlState::process_record_local;
+			return;
 		}
 		state = nextState;
+		handleResult(result);
 		break;
 	case ControlState::wait_remote:
-		// if (this->newRecord) {
-		// 	// If an new record comes in, newRecord will be set to true
-		// 	nextState = ControlState::process_record_remote;
-		// } else
 		// remote lookup should set state to process_record_remote
 		if (millis() - lastMilli > LOOKUP_DELAY) {
-			handleResult(result);
-			state = ControlState::cool_down;
+			// if record is received asynchronously at this point then
+			// timeout will still occur
+			state = ControlState::timeout_remote;
 		}
+		break;
+	case ControlState::timeout_remote:
+		handleResult(result);
+		state = ControlState::cool_down;
 		break;
 	case ControlState::process_record_local:
 		result = this->checkUserRecord();
+		lastMilli = millis();
+
 		if (result != granted && result != banned) {
 			// local look up did not result in granted or banned
-			lastMilli = millis();
 			if (this->lookupRemote) {
 				nextState = ControlState::wait_remote;
-				this->lookupRemote(uid, &jsonRecord);
+				this->lookupRemote(uid);
 			} else {
 				nextState = ControlState::cool_down;
-				handleResult(result);
 			}
 		} else {
 			nextState = ControlState::cool_down;
-			handleResult(result);
 		}
 		state = nextState;
+		handleResult(result);
 		break;
 	case ControlState::process_record_remote:
-		// we get here is the remote lookup successfully retrieved a JSON record
+		// we get here if the remote lookup successfully retrieved a JSON record
 		lastMilli = millis();
 		// result is static
 		result = this->checkUserRecord();
@@ -254,15 +258,20 @@ void AccessControlClass::handleResult(const AccessResult result) {
 		detail = "unrecognized";
 		break;
 	case banned:
-		detail = jsonRecord["is_banned"] | jsonRecord["is_banned"].as<String>();
+		detail = jsonRecord["is_banned"] | "(zero)";
 		break;
 	case expired:
-		detail = jsonRecord["validuntil"] | "unset";
+		// DEBUG_SERIAL.println(jsonRecord["validuntil"].as<String>());
+		if (jsonRecord.containsKey("validuntil")) {
+			detail = jsonRecord["validuntil"].as<String>();
+		} else {
+			detail = String("validuntil is unset");
+		}
 		break;
 	case not_yet_valid:
 		/* FALL THROUGH */
 	case granted:
-		detail = jsonRecord["validsince"] | "unset";
+		detail = jsonRecord["validsince"] | "validsince is unset";
 		break;
 	default:
 		detail = "unhandled lookup result";
@@ -272,6 +281,8 @@ void AccessControlClass::handleResult(const AccessResult result) {
 	if (state == lookup_local || state == process_record_local) {
 		detail += " (local DB)";
 	} else if (state == wait_remote) {
+		detail += " (waiting remote)";
+	} else if (state == timeout_remote) {
 		detail += " (remote DB timeout)";
 	} else {
 		detail += " (remote DB)";
@@ -301,6 +312,7 @@ void AccessControlClass::handleResult(const AccessResult result) {
  * @param reader 
  */
 void readHandler(ProxReaderInfo* reader) {
+	DEBUG_SERIAL.printf("[ INFO ] %lu - ", micros());
 	DEBUG_SERIAL.print(F("Fob read: "));
 	DEBUG_SERIAL.print(reader->facilityCode);
 	DEBUG_SERIAL.print(F(":"));

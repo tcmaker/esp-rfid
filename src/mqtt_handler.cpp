@@ -139,6 +139,7 @@ void processMqttMessage(MqttMessage incomingMessage)
 			DEBUG_SERIAL.printf(" json_memory_usage: %u\n", mqttIncomingJson.memoryUsage());
 		}
 
+		onNewRecord(incomingMessage.uid, mqttIncomingJson);
 		addUserID(incomingMessage);
 
 		break;
@@ -276,7 +277,7 @@ void mqttPublishEvent(JsonDocument *root, const String topic)
 	serializeJson(*root, payload);
 	uint16_t pkt_id = mqttClient.publish(full_topic.c_str(), 0, false, payload.c_str());
 	DEBUG_SERIAL.printf("[ INFO ] Mqtt publish to %s: (%u bytes at %lu us, id: %u)\n", full_topic.c_str(), payload.length(), micros(), pkt_id);
-	DEBUG_SERIAL.printf("Free mem: %lu\n", ESP.getFreeHeap());
+	DEBUG_SERIAL.printf("Free mem: %u\n", ESP.getFreeHeap());
 	// DEBUG_SERIAL.println(payload);
 }
 
@@ -309,6 +310,7 @@ void mqttPublishAck(const char* topic, const char* msg)
 	// DEBUG_SERIAL.println(topic);
 	// String ack_topic(topic + strlen(config.mqttTopic) + 1);
 	// ack_topic = "notify/" + ack_topic;
+	root["result"] = "ack";
 	root["msg"] = msg;
 	mqttPublishEvent(&root, ack_topic);
 }
@@ -319,6 +321,7 @@ void mqttPublishNack(const char* topic, const char* msg)
 	String nack_topic(topic);
 	// nack_topic = nack_topic + "/nack";
 	// root["id"] = config.deviceHostname;
+	root["result"] = "nack";
 	root["msg"] = msg;
 	mqttPublishEvent(&root, nack_topic);
 }

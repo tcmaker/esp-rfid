@@ -10,7 +10,7 @@
 #include "config.h"
 
 #define WIEGAND_MIN_TIME 2100   // minimum time (us) between D0/D1 edges 
-#define LOOKUP_DELAY 500        // maximum time (ms) to wait for UID lookup response from server
+#define LOOKUP_DELAY 950        // maximum time (ms) to wait for UID lookup response from server
 
 enum AccessResult {
     unrecognized = 1,
@@ -24,7 +24,10 @@ enum AccessResult {
 enum ControlState {
     wait_read,
     lookup_local,
+    setup_remote,
     wait_remote,
+    timeout_remote,
+    stop_remote,
     process_record_local,
     process_record_remote,
     check_pin,
@@ -64,7 +67,7 @@ class AccessControlClass {
 
 
     int (*lookupLocal)(const String uid, const JsonDocument* user);
-    void (*lookupRemote)(String uid, const JsonDocument* user);
+    void (*lookupRemote)(String uid);
     void (*accessDenied)(AccessResult result, String detail, String credential, String name);
     void (*accessGranted)(AccessResult result, String detail, String credential, String name);
 
@@ -103,6 +106,7 @@ class AccessControlClass {
 
 // void cardRead1Handler(ProxReaderInfo* reader);
 
+// extern armRemoteLookup(String uid)
 extern TCMWiegandClass TCMWiegand;
 extern AccessControlClass AccessControl;
 

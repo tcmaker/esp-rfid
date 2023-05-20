@@ -113,6 +113,7 @@ bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
 #include "doorbell.esp"
 
 bool mqttSendUserList();
+void armRemoteLookup(String uid);
 
 void accessGranted_wrapper(AccessResult result, String detail, String credential, String name)
 {
@@ -237,11 +238,57 @@ void ICACHE_FLASH_ATTR setup()
 
 	AccessControl.accessGranted = accessGranted_wrapper;
 	AccessControl.accessDenied = accessDenied_wrapper;
+	AccessControl.lookupRemote = armRemoteLookup;
 	
 	setupMqtt();
+	//mqtt.onNewRecord = onNewRecord;
 	setupWebServer();
 	setupWifi(bootInfo.configured);
 	writeEvent("INFO", "sys", "System setup completed, running", "");
+}
+
+static String localUid;
+// static JsonDocument *localScan;
+
+/**
+ * @brief Call this to copy the uid and allow matching against new records that arrive.
+ * 
+ * @param uid 
+ */
+void armRemoteLookup(String uid) {
+	localUid = uid;
+	
+}
+
+/**
+ * @brief Called when a ADD_UID message is received over MQTT. If the AccessControl object is
+ * in the `wait_remote` state, then this will copy over the relevent data from the MQTT message to the
+ * AccessControl record and update the AccessControl state.
+ * 
+ * 
+ * Note that this could be called asynchronously on the via the onMqttMessage() call back, but the
+ * current implementation processes the MQTT payloads via the main loop.
+ * 
+ * @param uid The "credential" from the new payload
+ * @param payload A reference to the MQTT JSON payload
+ */
+void onNewRecord(const String uid, const JsonDocument& payload) {
+	if (!localUid.isEmpty() && AccessControl.state == ControlState::wait_remote) {
+		// this state means that localUid has been set
+		if (uid == localUid) {
+			// set next state asynchronously to stop timeout
+			AccessControl.state = ControlState::process_record_remote;
+			localUid.clear();
+			AccessControl.jsonRecord["person"] = payload["person"].as<char>();
+			AccessControl.jsonRecord["credential"] = payload["credential"].as<char>();
+			AccessControl.jsonRecord["validuntil"] = payload["validuntil"].as<unsigned long>();
+			AccessControl.jsonRecord["validsince"] = payload["validsince"].as<unsigned long>();
+			AccessControl.jsonRecord["is_banned"] = payload["is_banned"].as<unsigned long>();
+		}
+	} else if (AccessControl.state == ControlState::cool_down || AccessControl.state == ControlState::wait_read) {
+		localUid.clear();
+	}
+
 }
 
 void ICACHE_RAM_ATTR loop()
