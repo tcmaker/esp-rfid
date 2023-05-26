@@ -10,6 +10,7 @@
 
 // timing constants
 
+#define MIN_NTP_TIME 1600000000
 #define COOLDOWN_MILIS 2000          // Milliseconds the RFID reader will be blocked between inputs
 #define KEYBOARD_TIMEOUT_MILIS 10000 // timeout in milis for keyboard input
 

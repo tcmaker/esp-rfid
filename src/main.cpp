@@ -50,6 +50,7 @@ SOFTWARE.
 
 NtpClient NTP;
 AsyncMqttClient mqttClient;
+Ticker NTPUpdateTimer;
 Ticker mqttReconnectTimer;
 Ticker wifiReconnectTimer;
 WiFiEventHandler wifiDisconnectHandler, wifiConnectHandler, wifiOnStationModeGotIPHandler;
@@ -60,6 +61,8 @@ AsyncWebSocket ws("/ws");
 #define DEBUG_SERIAL if(DEBUG)Serial
 
 // Variables for whole scope
+bool FS_IN_USE = false;
+bool triggerMqttConnect = false;
 unsigned long cooldown = 0;
 unsigned long currentMillis = 0;
 unsigned long deltaTime = 0;
@@ -68,6 +71,7 @@ bool doEnableWifi = false;
 bool formatreq = false;
 const char *httpUsername = "admin";
 unsigned long keyTimer = 0;
+bool forceNtpUpdate = false;
 
 uint8_t lastDoorbellState = 0;
 uint8_t lastDoorState = 0;
@@ -78,7 +82,6 @@ unsigned long lastbeat = 0;
 unsigned long previousLoopMillis = 0;
 unsigned long previousMillis = 0;
 bool shouldReboot = false;
-unsigned long uptimeSeconds = 0;
 unsigned long wifiPinBlink = millis();
 unsigned long wiFiUptimeMillis = 0;
 
@@ -91,9 +94,11 @@ unsigned long wiFiUptimeMillis = 0;
 #include "door.h"
 #include "accesscontrol.h"
 
-Door door;
+MqttDatabaseSender *mqttDbSender = nullptr;
+
+Door *door = nullptr;
 Bounce *openLockButton = nullptr;
-Bounce *doorStatusPin = nullptr;
+BounceWithCB *doorStatusPin = nullptr;
 Relay *relayLock = nullptr;
 Relay *relayGreen = nullptr;
 
@@ -117,18 +122,78 @@ void armRemoteLookup(String uid);
 
 void accessGranted_wrapper(AccessResult result, String detail, String credential, String name)
 {
-	DEBUG_SERIAL.printf("Granted: %s\n", detail.c_str());
-	DEBUG_SERIAL.printf("Wi-Fi: %d, MQTT: %d, Timer: %d\n", WiFi.isConnected(), mqttClient.connected(), mqttReconnectTimer.active());
+	DEBUG_SERIAL.printf("[ INFO ] Access granted: %s\n", detail.c_str());
+	DEBUG_SERIAL.printf("Wi-Fi connected: %d, NTP timer: %d, MQTT timer: %d\n", WiFi.isConnected(), NTPUpdateTimer.active(), mqttReconnectTimer.active());
+	DEBUG_SERIAL.println((unsigned long) mqttReconnectTimer._timer);
+
 	mqttPublishAccess(now(), result, detail, credential, name);
-	door.activate();
+	door->activate();
 }
 
 void accessDenied_wrapper(AccessResult result, String detail, String credential, String name)
 {
-	DEBUG_SERIAL.printf("Denied: %s\n", detail.c_str());
+	DEBUG_SERIAL.printf("[ INFO ] Access denied: %s\n", detail.c_str());
+	DEBUG_SERIAL.printf("Wi-Fi connected: %d, NTP timer: %d, MQTT timer: %d\n", WiFi.isConnected(), NTPUpdateTimer.active(), mqttReconnectTimer.active());
 	mqttPublishAccess(now(), result, detail, credential, name);
 }
 
+void onLockChange(Relay::OperationState op_state, Relay::OverrideState or_state) {
+	DEBUG_SERIAL.printf("[ INFO ] Unlock relay: %s (%s)\n", 
+						Relay::OperationState_Label[op_state],
+						Relay::OverrideState_Label[or_state]);
+	String state(Relay::OperationState_Label[op_state]);
+	state += "/" + String(Relay::OverrideState_Label[or_state]);
+	mqttPublishIo("unlock_relay", state);
+}
+
+void onOpenCloseChange(bool state) {
+	DEBUG_SERIAL.printf("[ INFO ] Door state: %s\n",
+						state ? "open" : "closed");
+	mqttPublishIo("door_open", String(state ? "true" : "false"));
+}
+
+static String localUid;
+
+/**
+ * @brief Call this to copy the uid and allow matching against new records that arrive.
+ * 
+ * @param uid 
+ */
+void armRemoteLookup(String uid) {
+	localUid = uid;
+	
+}
+
+/**
+ * @brief Called when a ADD_UID message is received over MQTT. If the AccessControl object is
+ * in the `wait_remote` state, then this will copy over the relevent data from the MQTT message to the
+ * AccessControl record and update the AccessControl state.
+ * 
+ * 
+ * Note that this could be called asynchronously on the via the onMqttMessage() call back, but the
+ * current implementation processes the MQTT payloads via the main loop.
+ * 
+ * @param uid The "credential" from the new payload
+ * @param payload A reference to the MQTT JSON payload
+ */
+void onNewRecord(const String uid, const JsonDocument& payload) {
+	if (!localUid.isEmpty() && AccessControl.state == ControlState::wait_remote) {
+		// this state means that localUid has been set
+		if (uid == localUid) {
+			// set next state asynchronously to stop timeout
+			AccessControl.state = ControlState::process_record_remote;
+			localUid.clear();
+			AccessControl.jsonRecord["username"] = payload["username"].as<char>();
+			AccessControl.jsonRecord["credential"] = payload["credential"].as<char>();
+			AccessControl.jsonRecord["validuntil"] = payload["validuntil"].as<unsigned long>();
+			AccessControl.jsonRecord["validsince"] = payload["validsince"].as<unsigned long>();
+			AccessControl.jsonRecord["is_banned"] = payload["is_banned"].as<unsigned long>();
+		}
+	} else if (AccessControl.state == ControlState::cool_down || AccessControl.state == ControlState::wait_read) {
+		localUid.clear();
+	}
+
+}
 
 
 void ICACHE_FLASH_ATTR setup()
@@ -190,7 +255,7 @@ void ICACHE_FLASH_ATTR setup()
 
 	if (config.openlockpin != 255)
 	{
-		DEBUG_SERIAL.printf("microseconds: %lu - setting up openLockButton (pin %d)\n", micros(), config.openlockpin);
+		// DEBUG_SERIAL.printf("microseconds: %lu - setting up openLockButton (pin %d)\n", micros(), config.openlockpin);
 		openLockButton = new Bounce();
 		openLockButton->attach(config.openlockpin, INPUT_PULLUP);
 		openLockButton->interval(30);
@@ -198,98 +263,59 @@ void ICACHE_FLASH_ATTR setup()
 
 	if (config.doorstatpin != 255)
 	{
-		DEBUG_SERIAL.printf("microseconds: %lu - setting up doorStatusPin (pin %d)\n", micros(), config.doorstatpin);
-		doorStatusPin = new Bounce();
+		// DEBUG_SERIAL.printf("microseconds: %lu - setting up doorStatusPin (pin %d)\n", micros(), config.doorstatpin);
+		doorStatusPin = new BounceWithCB();
 		doorStatusPin->interval(2000);
+		doorStatusPin->onStateChangeCB = onOpenCloseChange;
 		doorStatusPin->attach(config.doorstatpin, INPUT);
 	}
 
 	if (config.relayPin[0] != 255)
 	{
-		DEBUG_SERIAL.printf("microseconds: %lu - setting up relayLock (pin %d)\n", micros(), config.relayPin[0]);
+		// DEBUG_SERIAL.printf("microseconds: %lu - setting up relayLock (pin %d)\n", micros(), config.relayPin[0]);
 		relayLock = new Relay(
 			(uint8_t)config.relayPin[0],
 			config.relayType[0] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
 			config.activateTime[0]);
+		relayLock->onStateChangeCB = onLockChange;
 	}
 
 	if (config.relayPin[1] != 255 && config.relayPin[1] != config.relayPin[0])
 	{
-		DEBUG_SERIAL.printf("microseconds: %lu - setting up relayGreen (pin %d)\n", micros(), config.relayPin[1]);
+		// DEBUG_SERIAL.printf("microseconds: %lu - setting up relayGreen (pin %d)\n", micros(), config.relayPin[1]);
 		relayGreen = new Relay(
 			(uint8_t)config.relayPin[1],
 			config.relayType[1] ? Relay::ControlType::activeHigh : Relay::ControlType::activeLow,
 			config.activateTime[1]);
 	}
 
-	DEBUG_SERIAL.printf("microseconds: %lu - setting up reader\n", micros());
+	// DEBUG_SERIAL.printf("microseconds: %lu - setting up reader\n", micros());
 
 	TCMWiegand.begin(13, 12);
 	// pinMode(13, INPUT_PULLUP);
 	// pinMode(12, INPUT_PULLUP);
 
-	DEBUG_SERIAL.printf("microseconds: %lu - setting up door\n", micros());
+	// DEBUG_SERIAL.printf("microseconds: %lu - setting up door\n", micros());
 
-	// door = Door(relayLock, doorStatusPin);
-	door = Door(doorStatusPin, relayLock, relayGreen);
-	// if (config.maxOpenDoorTime)
-	door.maxOpenTime = config.maxOpenDoorTime;
-	door.begin();
+	door = new Door(doorStatusPin, relayLock, relayGreen);
+	door->maxOpenTime = config.maxOpenDoorTime;
+	door->begin();
 
+	// These connect AccessControl to Door and mqttClient.
 	AccessControl.accessGranted = accessGranted_wrapper;
 	AccessControl.accessDenied = accessDenied_wrapper;
 	AccessControl.lookupRemote = armRemoteLookup;
 	
 	setupMqtt();
-	//mqtt.onNewRecord = onNewRecord;
+
+	// setup static method for tracking database sender
+	mqttClient.onPublish(&MqttDatabaseSender::onMqttPublish);
+
 	setupWebServer();
 	setupWifi(bootInfo.configured);
 	writeEvent("INFO", "sys", "System setup completed, running", "");
 }
 
-static String localUid;
-// static JsonDocument *localScan;
-
-/**
- * @brief Call this to copy the uid and allow matching against new records that arrive.
- * 
- * @param uid 
- */
-void armRemoteLookup(String uid) {
-	localUid = uid;
-	
-}
-
-/**
- * @brief Called when a ADD_UID message is received over MQTT. If the AccessControl object is
- * in the `wait_remote` state, then this will copy over the relevent data from the MQTT message to the
- * AccessControl record and update the AccessControl state.
- * 
- * 
- * Note that this could be called asynchronously on the via the onMqttMessage() call back, but the
- * current implementation processes the MQTT payloads via the main loop.
- * 
- * @param uid The "credential" from the new payload
- * @param payload A reference to the MQTT JSON payload
- */
-void onNewRecord(const String uid, const JsonDocument& payload) {
-	if (!localUid.isEmpty() && AccessControl.state == ControlState::wait_remote) {
-		// this state means that localUid has been set
-		if (uid == localUid) {
-			// set next state asynchronously to stop timeout
-			AccessControl.state = ControlState::process_record_remote;
-			localUid.clear();
-			AccessControl.jsonRecord["person"] = payload["person"].as<char>();
-			AccessControl.jsonRecord["credential"] = payload["credential"].as<char>();
-			AccessControl.jsonRecord["validuntil"] = payload["validuntil"].as<unsigned long>();
-			AccessControl.jsonRecord["validsince"] = payload["validsince"].as<unsigned long>();
-			AccessControl.jsonRecord["is_banned"] = payload["is_banned"].as<unsigned long>();
-		}
-	} else if (AccessControl.state == ControlState::cool_down || AccessControl.state == ControlState::wait_read) {
-		localUid.clear();
-	}
-
-}
 
 void ICACHE_RAM_ATTR loop()
 {
@@ -309,33 +335,30 @@ void ICACHE_RAM_ATTR loop()
 		}
 	}
 
-	// digitalWrite(9, 1);
-
 	ledWifiStatus();
 	ledAccessDeniedOff();
 	beeperBeep();
-
-	// Door::update() handles relay and status pin updates
-	door.update();
-
 	doorbellStatus();
 
-	// if (currentMillis >= cooldown)
-	// {
-	// 	rfidLoop();
-	// }
-
+	// Bits are handled asynchronously. The TCMWiegand.loop() checks the bit
+	// count and timing to see if data is available.
+	// The loop will use the 
 	TCMWiegand.loop();
-	// HidProxWiegand.loop();
 	AccessControl.loop();
 
+	// Door::update() handles relay and status pin updates
+	bool door_acted = door->update();
+
+	if (door_acted) {
+		DEBUG_SERIAL.println("[ DEBUG ] Door acted");
+		mqttPublishIo("Door", String(door->status()));
+	}
+
 	// activateRelay[] is set by:
-	// 1. rfidLoop for authorized access
-	// 2. WebSocket through UI
-	// 3. MQTT?
+	// WebSocket through UI
 	if (activateRelay[0])
 	{
-		door.activate();
+		door->activate();
 		// if (relayGreen)
 		// 	relayGreen->activate();
 		mqttPublishIo("lock", "UNLOCKED");
@@ -358,14 +381,25 @@ void ICACHE_RAM_ATTR loop()
 	}
 
 	if (networkFirstUp) {
+		// Wait to setup NTP until network is up, otherwise we'll have to wait
+		// an hour for the next sync.
 		networkFirstUp = false;
 		Serial.println("[ INFO ] Trying to setup NTP Server");
 		NTP.Ntp(config.ntpServer, config.timeZone, config.ntpInterval * 60);
 	}
 
-	uptimeSeconds = NTP.getUptimeSec();
+	if (WiFi.isConnected() && (now() < MIN_NTP_TIME) && !NTPUpdateTimer.active()) {
+		// If our time didn't get updated (UDP packet lost), then generate another packet
+		// in 10 seconds. Once an NTP packet is received back, this will be detached.
+		// Time library will re-sync on its own schedule.
+		NTPUpdateTimer.attach_scheduled(10, NTP.getNtpTime);
+	}
 
-	if (config.autoRestartIntervalSeconds > 0 && uptimeSeconds > config.autoRestartIntervalSeconds)
+	// if (forceNtpUpdate) {
+	// 	NTP.getNtpTime();
+	// }
+
+	if (config.autoRestartIntervalSeconds > 0 && (unsigned long) NTP.getUptimeSec() > config.autoRestartIntervalSeconds)
 	{
 		writeEvent("WARN", "sys", "Auto restarting...", "");
 		shouldReboot = true;
@@ -375,7 +409,8 @@ void ICACHE_RAM_ATTR loop()
 	{
 		writeEvent("INFO", "sys", "System is going to reboot", "");
 		if (config.mqttEnabled and mqttClient.connected()) {
-			mqttPublishShutdown(now(), uptimeSeconds);
+			mqttPublishShutdown(now(), NTP.getUptimeSec());
+			mqttClient.disconnect();
 		}
 		SPIFFS.end();
 		ESP.restart();
@@ -410,96 +445,29 @@ void ICACHE_RAM_ATTR loop()
 		if (mqttClient.connected()) {
 			if ((unsigned long) now() - lastbeat > config.mqttInterval)
 			{
-				mqttPublishHeartbeat(now(), uptimeSeconds);
+				mqttPublishHeartbeat(now(), NTP.getUptimeSec());
 				lastbeat = (unsigned)now();
 				// + config.mqttInterval;
-				DEBUG_SERIAL.print("[ INFO ] Nextbeat=");
-				DEBUG_SERIAL.println(lastbeat + config.mqttInterval);
+				// DEBUG_SERIAL.print("[ INFO ] Nextbeat=");
+				DEBUG_SERIAL.printf("[ INFO ] %lu - Nextbeat=%lu, Free heap:%u\n", (unsigned long) now(), lastbeat + config.mqttInterval, ESP.getFreeHeap());
 			}
 			processMqttQueue();
+			
 			if (flagMQTTSendUserList) {
-				flagMQTTSendUserList = mqttSendUserList();
+				if (mqttDbSender == nullptr) {
+					mqttDbSender = new MqttDatabaseSender;
+				}
+				flagMQTTSendUserList = mqttDbSender->run();
+				if (!flagMQTTSendUserList) {
+					// DEBUG_SERIAL.println((unsigned long) mqttReconnectTimer.);
+					delete mqttDbSender;
+					mqttDbSender = nullptr;
+				}
 			}
-		} else if (WiFi.isConnected() && !mqttReconnectTimer.active()) {
-			mqttReconnectTimer.once(20, connectToMqtt);
-		}
+		} else if (WiFi.isConnected() && !mqttReconnectTimer.active()){
+			mqttReconnectTimer.attach_scheduled(10, connectToMqtt);
+			// Ticker detach will occur in onMqttConnect callback
+		} 
 	}
 }
 
-bool mqttSendUserList()
-{
-	static unsigned long count = 0;
-	static Dir *dir = nullptr;
-	static bool available;
-
-	// should this be a static document to avoid heap fragmentation?
-	DynamicJsonDocument root(4096);
-
-	FSInfo fsinfo;
-
-	unsigned long i = 0;
-
-	if (count == 0) {
-		// starting out, open filesystem
-		dir = new Dir;
-		*dir = SPIFFS.openDir("/P/");
-
-		// load first file
-		available = dir->next();
-		// otherwise filerecord is loaded from lass call
-	}
-
-	JsonArray users = root.createNestedArray("userlist");
-
-	while (available && i < 10)	{
-		++count;
-		++i;
-
-		JsonObject item = users.createNestedObject();
-
-		String uid = dir->fileName();
-		uid.remove(0, 3);  // remove "/P/" from filename
-		item["uid"] = uid;
-
-		File f = SPIFFS.open(dir->fileName(), "r");
-		size_t size = f.size();
-		item["filesize"] = (unsigned) size;
-
-		std::unique_ptr<char[]> buf(new char[size + 1]);
-		f.readBytes(buf.get(), size);
-		f.close();
-
-		// ensure buffer is null terminated
-		buf[size] = '\0';
-
-		// presume that file is already JSON
-		item["record"] = serialized(buf.get());
-
-		// prepare for next file
-		available = dir->next();
-	}
-
-	root["size"] = i;
-	root["index"] = count - i;
-
-	if (!available) {
-		// no next file, so we're done
-		// last json payload includes overall data
-		root["total"] = count;
-		SPIFFS.info(fsinfo);
-		root["flash_used"] = fsinfo.usedBytes;
-		root["flash_available"] = fsinfo.totalBytes - fsinfo.usedBytes;
-		root["complete"] = true;
-		// complete = true;
-		count = 0;
-		delete dir;
-		dir = nullptr;
-	} else {
-		root["complete"] = false;
-	}
-
-	root["json_memory_usage"] = root.memoryUsage();
-	mqttPublishEvent(&root, "notify/db/list");
-
-	return available;
-}

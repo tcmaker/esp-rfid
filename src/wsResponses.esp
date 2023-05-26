@@ -127,7 +127,7 @@ void ICACHE_FLASH_ATTR printScanResult(int networksFound)
 	// sort by RSSI
 	int n = networksFound;
 	int indices[n];
-	int skip[n];
+	// int skip[n];
 	for (int i = 0; i < networksFound; i++)
 	{
 		indices[i] = i;
@@ -139,7 +139,7 @@ void ICACHE_FLASH_ATTR printScanResult(int networksFound)
 			if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i]))
 			{
 				std::swap(indices[i], indices[j]);
-				std::swap(skip[i], skip[j]);
+				// std::swap(skip[i], skip[j]);
 			}
 		}
 	}

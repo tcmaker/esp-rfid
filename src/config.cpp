@@ -1,5 +1,7 @@
 #include "config.h"
 
+#define DEBUG_SERIAL if(DEBUG)Serial
+
 Config config;
 
 bool ICACHE_FLASH_ATTR loadConfiguration()
@@ -13,8 +15,9 @@ bool ICACHE_FLASH_ATTR loadConfiguration()
 		return false;
 	}
 	size_t size = configFile.size();
-	std::unique_ptr<char[]> buf(new char[size]);
+	std::unique_ptr<char[]> buf(new char[size + 1]);
 	configFile.readBytes(buf.get(), size);
+	buf[size] = '\0';
 	DynamicJsonDocument json(2048);
 	auto error = deserializeJson(json, buf.get());
 	if (error)

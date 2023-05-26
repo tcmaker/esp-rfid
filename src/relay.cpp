@@ -11,20 +11,32 @@
 
 #include "relay.h"
 
-void Relay::debugPrint(const char* info) {
-  Serial.printf("milliseconds: %lu - %s\n", millis(), info);
-}
+#define DEBUG_SERIAL if(DEBUG)Serial
 
-Relay::Relay() 
-  : controlType(unknown)
-  , actuationTime(2000)
-  {}
+const char* Relay::OperationState_Label[4] = 
+  {
+      "active",
+      "activating",
+      "inactive",
+      "deactivating"
+  };
+
+const char* Relay::OverrideState_Label[3] = 
+  {
+      "normal",
+      "holding",
+      "lockedout"
+  };
 
 Relay::Relay(uint8_t pin, ControlType type , unsigned long actuation_ms, unsigned long delay_ms)
   : controlPin(pin)
   , controlType(type)
   , actuationTime(actuation_ms)
   , delayTime(delay_ms)
+  , lastMillis(0)
+  , state(inactive)
+  , override(normal)
+  , onStateChangeCB(nullptr)
   {}
 
 /**
@@ -37,9 +49,9 @@ bool Relay::isConfigured()
   return controlType != 255;
 }
 
-void Relay::activate()
+void Relay::activate(bool report)
 {
-  Serial.printf("Relay(%d)::activate()\n", controlPin);
+  DEBUG_SERIAL.printf("Relay(%d)::activate()\n", controlPin);
   if (override != normal)
     return;
 
@@ -50,11 +62,19 @@ void Relay::activate()
   } else {
     state = active;
   }
+
+  if (report && onStateChangeCB) {
+    onStateChangeCB(state, override);
+  }
 }
 
-void Relay::deactivate()
+// void Relay::deactivate() {
+//   deactivate()
+// }
+
+void Relay::deactivate(bool report)
 {
-  Serial.printf("Relay(%d)::deactivate()\n", controlPin);
+  DEBUG_SERIAL.printf("Relay(%d)::deactivate()\n", controlPin);
   if (override != normal)
     return;
   
@@ -65,19 +85,32 @@ void Relay::deactivate()
   } else {
     state = inactive;
   }
+
+  if (report && onStateChangeCB) {
+    onStateChangeCB(state, override);
+  }
 }
 
 void Relay::hold() {
-  activate();
+  activate(false);
   override = holding;
+  if (onStateChangeCB) {
+    onStateChangeCB(state, override);
+  }
 }
 
 void Relay::lockout() {
-  deactivate();
+  deactivate(false);
   override = lockedout;
+  if (onStateChangeCB) {
+    onStateChangeCB(state, override);
+  }
 }
 
 void Relay::release() {
+  if (override != normal && onStateChangeCB) {
+    onStateChangeCB(state, normal);
+  }
   override = normal;
 }
 
@@ -95,31 +128,35 @@ void Relay::begin()
 bool Relay::update() 
 {
   bool acted = false;
-  const unsigned long now = millis();
+  const unsigned long currentMillis = millis();
+  static auto last_override = this->override;
 
   switch (state)
   {
     case activating:
     case deactivating:
-        if (now > lastMillis + delayTime) 
-        {
-        state = (state == activating) ? active : inactive;
-        }
-        break;
+      if (currentMillis - lastMillis > delayTime) 
+      {
+          state = (state == activating) ? active : inactive;
+      }
+      break;
     case active:
-        if (override == normal && (actuationTime > 0) && (now > lastMillis + actuationTime))
-        {
+      if (override == normal && (actuationTime > 0) && (currentMillis - lastMillis > actuationTime))
+      {
         deactivate();
         acted = true;
-        }
-        break;
+      }
+      break;
     case inactive:
-        if (override == normal) 
-        {
-            digitalWrite(controlPin, !controlType);
-        }
+      // if (override == normal && last_override != override)
+      // {
+      //   deactivate();
+      //   acted = true;
+      //   // digitalWrite(controlPin, !controlType);
+      // }
     default: // inactive
         break;
   }
+  last_override = this->override;
   return acted;
 }

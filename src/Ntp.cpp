@@ -52,13 +52,16 @@ time_t ICACHE_FLASH_ATTR NtpClient::getNtpTime()
 								 unsigned long lowWord = word(packet.data()[42], packet.data()[43]);
 								 time_t UnixUTCtime = (highWord << 16 | lowWord) - 2208988800UL;
 								 setTime(UnixUTCtime);
+								 NTPUpdateTimer.detach();
 							 });
 	}
 	else
 	{
 	}
 	udpListener.write(NTPpacket, sizeof(NTPpacket));
-	// ugly
+
+	// ugly - returning zero to the time.h lib will not set the time
+	// this is necessary to as the UDP packet is asynchronous
 	return 0;
 }
 

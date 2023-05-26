@@ -4,100 +4,43 @@
 
 char mqttBuffer[MAX_MQTT_BUFFER];
 DynamicJsonDocument mqttIncomingJson(4096);
-std::queue<MqttMessage*> MqttMessages;
+std::queue<MqttMessage> MqttMessages;
 
-void setupMqtt()
-{
-  if (!config.mqttEnabled)
-	{
-		return;
-	}
-
-	// DEBUG_SERIAL.println("[ INFO ] Trying to setup MQTT");
-
-	// if (config.mqttHA)
-	// {
-	// 	String stopic(config.mqttTopic);
-	// 	String topicString = stopic + "/avty";
-	// 	String payloadString = "offline";
-	// 	char *topicLWT = strdup(topicString.c_str());
-	// 	char *payloadLWT = strdup(payloadString.c_str());
-	// 	mqttClient.setWill(topicLWT, 2, true, payloadLWT);
-	// }
-	mqttClient.setServer(config.mqttHost, config.mqttPort);
-	mqttClient.setCredentials(config.mqttUser, config.mqttPass);
-
-	mqttClient.onDisconnect(onMqttDisconnect);
-	mqttClient.onPublish(onMqttPublish);
-	mqttClient.onSubscribe(onMqttSubscribe);
-	mqttClient.onConnect(onMqttConnect);
-	mqttClient.onMessage(onMqttMessage);
-}
-
-void connectToMqtt()
-{
-	mqttReconnectTimer.detach();
-	if (!config.mqttEnabled || mqttClient.connected()) {
-		return;
-	}
-	DEBUG_SERIAL.println("[ DEBUG ] Connecting MQTT");
-	DynamicJsonDocument root(512);
-	
-	// String topic(config.mqttTopic);
-
-	// root["base_topic"] = topic;
-	root["id"] = config.deviceHostname;
-	root["ip"] = WiFi.localIP().toString();
-
-	static char topic[64];
-	strcpy(topic, config.mqttTopic);
-	DEBUG_SERIAL.printf("base topic length %u\n", strlen(topic));
-	strcat(topic, "/notify/lastwill");
-	DEBUG_SERIAL.printf("lastwill topic length %u\n", strlen(topic));
-
-	topic[63] = '\0';
-
-	static char payload[64];
-	size_t x = serializeJson(root, payload, 64);
-	payload[63] = '\0';
-
-	DEBUG_SERIAL.printf("[ DEBUG ] lastwill json payload size: %u\r\n", x);
-	// mqttClient.setWill(topic.c_str(), 0, false, payload.c_str());
-	mqttClient.setWill(topic, 0, false, payload);
-	mqttClient.connect();
+MqttMessage::MqttMessage(const char mqttTopic[], const char mqttPayload[]) {
+	strlcpy(topic, mqttTopic, sizeof(topic));
+	msgLen = strlen(mqttPayload);
+	serializedMessage = std::unique_ptr<char[]>(new char[msgLen + 1]);
+	// DEBUG_SERIAL.println(mqttPayload);
+	strlcpy(serializedMessage.get(), mqttPayload, msgLen + 1);
+	// DEBUG_SERIAL.println(serializedMessage.get());
 }
 
 void processMqttQueue()
 {
-	MqttMessage *m;
 	if (MqttMessages.empty())
 		return;
-	DEBUG_SERIAL.println("[ DEBUG ] Handling MQTT queue");
-	m = MqttMessages.front();
+
+	MqttMessage &m = MqttMessages.front();
+	processMqttMessage(m);
 	MqttMessages.pop();
-	processMqttMessage(*m);
-	free(m);
-	// while(messageQueue != NULL) {
-	// 	MqttMessage *messageToProcess = messageQueue;
-	// 	messageQueue = messageToProcess->nextMessage;
-	// 	processMqttMessage(messageToProcess);
-	// }
+	// delete &m;
 }
 
-void processMqttMessage(MqttMessage incomingMessage)
+void processMqttMessage(MqttMessage& incomingMessage)
 {
 	char *topic = incomingMessage.topic;
+	// const char *message = incomingMessage.serializedMessage.get();
 
-	DEBUG_SERIAL.printf("[ INFO ] Processing MQTT message: %lu\n", micros());
+	// DEBUG_SERIAL.printf("[ INFO ] %lu us - Processing MQTT message: %s\n", micros(), topic);
 
 	mqttIncomingJson.clear();
 	// DynamicJsonDocument mqttIncomingJson(4096);
-
-	// note that the serializedMessage is modified here rather than dupicating it into the JSON document.
-	auto error = deserializeJson(mqttIncomingJson, incomingMessage.serializedMessage);
+	// DEBUG_SERIAL.println(incomingMessage.serializedMessage.get());
+	// incomingMessage.serializedMessage is modified by the deserializeJson function
+	auto error = deserializeJson(mqttIncomingJson, incomingMessage.serializedMessage.get());
 	if (error)
 	{
-		DEBUG_SERIAL.println("[ INFO ] Failed deserializing MQTT message.");
+		DEBUG_SERIAL.printf("[ INFO ] Failed deserializing MQTT message: %s\n", error.c_str());
 		mqttPublishNack("notify/error", "invalid JSON");
 		return;
 	}
@@ -109,14 +52,13 @@ void processMqttMessage(MqttMessage incomingMessage)
 		return;
 	}
 	
-	const char *id = mqttIncomingJson["id"];
-	// String espIp = WiFi.localIP().toString();
-	// if (!((strcmp(ipadr, espIp.c_str()) == 0) && (ipadr != NULL)))
-	// {
-		DEBUG_SERIAL.print("[ INFO ] recv id: ");
-		DEBUG_SERIAL.println(id);
-	// 	return;
-	// }
+	const char* id = mqttIncomingJson["id"];
+	if (id && !((strcmp(id, config.deviceHostname)) == 0))
+	{
+		// TODO: reject messages without id match
+		DEBUG_SERIAL.printf("[ INFO ] recv id mismatch: %s\n", id);
+		// return
+	}
 
 	MqttAccessTopic topicID = decodeMqttTopic(topic);
 	// String filename = "/P/";
@@ -133,9 +75,9 @@ void processMqttMessage(MqttMessage incomingMessage)
 
 
 		strlcpy(incomingMessage.uid, mqttIncomingJson["credential"], 20);
-		DEBUG_SERIAL.print("[ INFO ] Adding credential: ");
-		DEBUG_SERIAL.println(incomingMessage.uid);
-		if (DEBUG && mqttIncomingJson.memoryUsage() > 165) {
+		// DEBUG_SERIAL.print("[ INFO ] Adding credential: ");
+		// DEBUG_SERIAL.println(incomingMessage.uid);
+		if (DEBUG && mqttIncomingJson.memoryUsage() > 180) {
 			DEBUG_SERIAL.printf(" json_memory_usage: %u\n", mqttIncomingJson.memoryUsage());
 		}
 
@@ -164,11 +106,10 @@ void processMqttMessage(MqttMessage incomingMessage)
 	case GET_CONF:
 		DEBUG_SERIAL.println("[ INFO ] Get configuration");
 		f = SPIFFS.open("/config.json", "r");
-		char *buf;
 		if (f)
 		{
 			int fileSize = f.size();
-			buf = (char *)malloc(fileSize + 1);
+			char *buf = (char *)malloc(fileSize + 1);
 			f.readBytes(buf, fileSize);
 			f.close();
 
@@ -188,40 +129,195 @@ void processMqttMessage(MqttMessage incomingMessage)
 		DEBUG_SERIAL.println("[ ERROR ] Unsupported message");
 		break;
 	}
-		// writeLatest(" ", "MQTT", 1);
-		// mqttPublishAccess(now(), "true", "Always", "MQTT", " ");
-		// for (int currentRelay = 0; currentRelay < config.numRelays; currentRelay++)
-		// {
-		// 	activateRelay[currentRelay] = true;
-		// }
-		// previousMillis = millis();
-		// 	else if (strcmp(command, "updateconf") == 0)
-		// 	{
-		// #ifdef DEBUG
-		// 		Serial.println("[ INFO ] Update configuration");
-		// #endif
-		// 		DynamicJsonDocument mqttIncomingJson(4096);
-		// 		auto error = deserializeJson(mqttIncomingJson, incomingMessage->serializedMessage);
-		// 		if (error)
-		// 		{
-		// #ifdef DEBUG
-		// 			Serial.println("[ INFO ] Failed parsing MQTT message!!!");
-		// #endif
-		// 			return;
-		// 		}
-		// 		File f = SPIFFS.open("/config.json", "w");
-		// 		if (f)
-		// 		{
-		// 			serializeJsonPretty(mqttIncomingJson["configfile"], f);
-		// 			f.close();
-		// 			mqttPublishAck("updateconf");
-		// 			shouldReboot = true;
-		// 		}
-		// 	}
-
-	// free(incomingMessage);
 	return;
 }
+
+MqttDatabaseSender::MqttDatabaseSender() {
+	// DEBUG_SERIAL.printf("[ INFO ] MqttDatabaseSender - Free heap:%u\n", ESP.getFreeHeap());
+	pkt_id = 1;
+	root = new DynamicJsonDocument(4096);
+	// mqttClient.onPublish((std::function<void(uint16_t packetId)>) std::bind(&MqttDatabaseSender::onMqttPublish, this, std::placeholders::_1));
+	// mqttClient.onPublish(&MqttDatabaseSender::onMqttPublish);
+}
+
+MqttDatabaseSender::~MqttDatabaseSender() {
+	delete root;
+	// DEBUG_SERIAL.println("~MqttDatabaseSender");
+	// DEBUG_SERIAL.println((unsigned long) dir);
+	if (dir != nullptr) {
+		FS_IN_USE = false;
+		delete dir;
+		// dir = nullptr;
+	}
+}
+
+uint16_t MqttDatabaseSender::pkt_id = 1;
+
+void MqttDatabaseSender::onMqttPublish(uint16_t packetId) {
+	// DEBUG_SERIAL.printf("[ DEBUG ] %lu us - packet ack'd: %u\n", micros(), packetId);
+	if (pkt_id > 1 && pkt_id == packetId) {
+		pkt_id = 1;
+	}
+}
+
+bool MqttDatabaseSender::run() {
+	if (count == 0) {
+		while (FS_IN_USE) {
+		}
+		FS_IN_USE = true;
+
+		// starting out, open filesystem
+		dir = new Dir;
+		*dir = SPIFFS.openDir("/P/");
+		DEBUG_SERIAL.println((unsigned long) dir);
+
+		// load first file
+		_available = dir->next();
+	}
+
+	if (pkt_id == 1) {
+		// last packet cleared, build new packet
+		
+		unsigned long i = 0;
+		
+		root->clear();
+		//previous packet was accepted by mqttClient
+		//move to next packet
+
+		JsonArray users = root->createNestedArray("userlist");
+
+		while (_available && i < 10)	{
+			++count;
+			++i;
+
+			JsonObject item = users.createNestedObject();
+
+			String uid = dir->fileName();
+			uid.remove(0, 3);  // remove "/P/" from filename
+			item["uid"] = uid;
+
+			File f = SPIFFS.open(dir->fileName(), "r");
+			size_t size = f.size();
+			item["filesize"] = (unsigned) size;
+
+			std::unique_ptr<char[]> buf(new char[size + 1]);
+			f.readBytes(buf.get(), size);
+			f.close();
+
+			// ensure buffer is null terminated
+			buf[size] = '\0';
+
+			// presume that file is already JSON
+			item["record"] = serialized(buf.get());
+
+			// prepare for next file
+			_available = dir->next();
+		}
+
+		(*root)["size"] = i;
+		(*root)["index"] = count - i;
+
+		if (!_available) {
+			// no next file, so we're done
+			// last json payload includes overall data
+			FSInfo fsinfo;
+
+			(*root)["total"] = count;
+			SPIFFS.info(fsinfo);
+			(*root)["flash_used"] = fsinfo.usedBytes;
+			(*root)["flash_available"] = fsinfo.totalBytes - fsinfo.usedBytes;
+			(*root)["complete"] = true;
+		} else {
+			(*root)["complete"] = false;
+		}
+
+		(*root)["json_memory_usage"] = (*root).memoryUsage();
+	} else if (millis() - lastSend > 2000) {
+		DEBUG_SERIAL.println("[ DEBUG ] MqttDatabaseSender timeout");
+		// timeout -- die
+		return false;
+	} else if (pkt_id > 1) {
+		// do nothing now, get called again later
+		return true;
+	} // else if pkt_id == 0 , then last packet did not send, so send again
+
+	// send packet with qos 1 to keep track that packets were sent
+	pkt_id = mqttPublishEvent(root, "notify/db/list", 1);
+	if (pkt_id > 1) {
+		lastSend = millis();
+	}
+
+	// if (pkt_id != 0) {
+	DEBUG_SERIAL.printf("[ DEBUG ] %lu us - pkt_id: %u\n", micros(), pkt_id);
+	// }
+
+	if (!_available) {
+		done = true;
+		return false;
+	}
+
+	// keep calling as long as files available or pkt_id is zero (packet not accepted)
+	return true;
+}
+
+void setupMqtt()
+{
+  if (!config.mqttEnabled)
+	{
+		return;
+	}
+
+	// if (config.mqttHA)
+	// {
+	// 	String stopic(config.mqttTopic);
+	// 	String topicString = stopic + "/avty";
+	// 	String payloadString = "offline";
+	// 	char *topicLWT = strdup(topicString.c_str());
+	// 	char *payloadLWT = strdup(payloadString.c_str());
+	// 	mqttClient.setWill(topicLWT, 2, true, payloadLWT);
+	// }
+	mqttClient.setServer(config.mqttHost, config.mqttPort);
+	mqttClient.setCredentials(config.mqttUser, config.mqttPass);
+
+	mqttClient.onDisconnect(onMqttDisconnect);
+	mqttClient.onPublish(onMqttPublish);
+	mqttClient.onSubscribe(onMqttSubscribe);
+	mqttClient.onConnect(onMqttConnect);
+	mqttClient.onMessage(onMqttMessage);
+}
+
+void connectToMqtt()
+{
+	// mqttReconnectTimer.detach();
+	if (!config.mqttEnabled || mqttClient.connected()) {
+		return;
+	}
+	DEBUG_SERIAL.println("[ DEBUG ] Connecting MQTT");
+	DynamicJsonDocument root(512);
+	
+	// String topic(config.mqttTopic);
+
+	// root["base_topic"] = topic;
+	root["id"] = config.deviceHostname;
+	root["ip"] = WiFi.localIP().toString();
+
+	// static variables are necessary as the mqttClient
+	// does not copy the strings, just stores the pointers
+	static char topic[64];
+	strlcpy(topic, config.mqttTopic, 64);
+	strlcat(topic, "/notify/lastwill", 64);
+
+	static char payload[64];
+	size_t x = serializeJson(root, payload, 64);
+	payload[63] = '\0';
+
+	DEBUG_SERIAL.printf("[ DEBUG ] lastwill json payload size: %u / 64\n", x);
+	// mqttClient.setWill(topic.c_str(), 0, false, payload.c_str());
+	mqttClient.setWill(topic, 0, false, payload);
+	mqttClient.connect();
+}
+
+
 
 void disconnectMqtt()
 {
@@ -238,7 +334,7 @@ MqttAccessTopic decodeMqttTopic(const char *topic) {
 	const char* subTopic = topic + strlen(config.mqttTopic) + 1;
 
 	if (strcmp(subTopic, "db/add") == 0) {
-		DEBUG_SERIAL.println("[ INFO ] db/add");
+		// DEBUG_SERIAL.println("[ INFO ] db/add");
  		return ADD_UID;
 	} else if (strcmp(subTopic, "db/delete") == 0) {
 		DEBUG_SERIAL.println("[ INFO ] db/delete");
@@ -263,21 +359,37 @@ MqttAccessTopic decodeMqttTopic(const char *topic) {
 	}
 }
 
+// holdover from original implementation.
+void mqttPublishEvent(JsonDocument *root)
+{
+	mqttPublishEvent(root, "notify/send");
+}
 
-
-void mqttPublishEvent(JsonDocument *root, const String topic)
+uint16_t mqttPublishEvent(JsonDocument *root, const String topic, const uint8_t qos)
 {
 	if (!config.mqttEnabled || !mqttClient.connected()) {
-		return;
+		return 0;
 	}
-	String full_topic(config.mqttTopic);
-	full_topic = full_topic + "/" + topic;
+
 	(*root)["id"] = config.deviceHostname;
+
 	String payload;
 	serializeJson(*root, payload);
-	uint16_t pkt_id = mqttClient.publish(full_topic.c_str(), 0, false, payload.c_str());
-	DEBUG_SERIAL.printf("[ INFO ] Mqtt publish to %s: (%u bytes at %lu us, id: %u)\n", full_topic.c_str(), payload.length(), micros(), pkt_id);
-	DEBUG_SERIAL.printf("Free mem: %u\n", ESP.getFreeHeap());
+	return mqttPublishEvent(payload, topic, qos);
+}
+
+uint16_t mqttPublishEvent(const String payload, const String topic, const uint8_t qos) {
+	if (!config.mqttEnabled || !mqttClient.connected()) {
+		return 0;
+	}
+
+	String full_topic(config.mqttTopic);
+	full_topic = full_topic + "/" + topic;
+
+	// auto pkt_id = mqttClient.publish(full_topic.c_str(), 0, false, payload.c_str());
+	return mqttClient.publish(full_topic.c_str(), qos, false, payload.c_str());
+	// DEBUG_SERIAL.printf("[ INFO ] Mqtt publish to %s: (%u bytes at %lu us, id: %u)\n", full_topic.c_str(), payload.length(), micros(), pkt_id);
+	// DEBUG_SERIAL.printf("Free mem: %u\n", ESP.getFreeHeap());
 	// DEBUG_SERIAL.println(payload);
 }
 
@@ -296,12 +408,6 @@ void mqttPublishEvent(JsonDocument *root, const String topic)
 // #endif
 // 	}
 // }
-
-// holdover from original implementation.
-void mqttPublishEvent(JsonDocument *root)
-{
-	mqttPublishEvent(root, "notify/send");
-}
 
 void mqttPublishAck(const char* topic, const char* msg) 
 {
@@ -326,10 +432,10 @@ void mqttPublishNack(const char* topic, const char* msg)
 	mqttPublishEvent(&root, nack_topic);
 }
 
-void mqttPublishBoot(time_t boot_time)
+void mqttPublishConnect(time_t boot_time)
 {
 	DynamicJsonDocument root(512);
-	String topic = String("notify/boot");
+	String topic = String(F("notify/connected"));
 	// root["time"] = boot_time;
 	root["device"] = F("ESP-RFID");
 	root["version"] = bootInfo.version;
@@ -469,6 +575,7 @@ void mqttPublishHeartbeat(time_t heartbeat, time_t uptime)
 	String topic("notify/heartbeat");
 	root["time"] = heartbeat;
 	root["uptime"] = uptime;
+	root["free_ram"] = ESP.getFreeHeap();
 	// root["id"] = WiFi.localIP().toString();
 	mqttPublishEvent(&root, topic);
 }
@@ -502,6 +609,12 @@ void mqttPublishAccess(time_t accesstime, AccessResult const &result, String con
 	case granted:
 		root["result"] = "granted";
 		break;
+	case not_yet_valid:
+		root["result"] = "not yet valid";
+		break;
+	case time_not_valid:
+		root["result"] = "local time not valid";
+		break;
 	default:
 		root["result"] = "unknown";
 		break;
@@ -512,7 +625,7 @@ void mqttPublishAccess(time_t accesstime, AccessResult const &result, String con
 	root["credential"] = credential;
 
 	if (result != unrecognized) {
-		root["person"] = person;
+		root["username"] = person;
 	}
 
 	mqttPublishEvent(&root, topic);
@@ -520,19 +633,22 @@ void mqttPublishAccess(time_t accesstime, AccessResult const &result, String con
 
 void mqttPublishIo(String const &io, String const &state)
 {
-	if (config.mqttHA && config.mqttEnabled && mqttClient.connected())
+	if (config.mqttEnabled && mqttClient.connected())
 	{
-		String mtopic(config.mqttTopic);
-		String topic = mtopic + "/io/" + io;
+		String topic("notify/io/");
+		topic += io;
 
-		mqttClient.publish(topic.c_str(), 0, false, state.c_str());
+		DynamicJsonDocument root(512);
 
-#ifdef DEBUG
-		Serial.print("[ INFO ] Mqtt Publish: ");
-		Serial.println(state + " @ " + topic);
-#endif
+		root["state"] = state;
+		root["time"] = now();
+		mqttPublishEvent(&root, topic);
+
+		DEBUG_SERIAL.print("[ INFO ] Mqtt Publish: ");
+		DEBUG_SERIAL.println(state + " @ " + topic);
 	}
 }
+
 
 void getUserList() {
 	if (flagMQTTSendUserList) {
@@ -542,71 +658,13 @@ void getUserList() {
 	}
 }
 
-// void getUserList()
-// {
-// 	DynamicJsonDocument root(4096);
-// 	FSInfo fsinfo;
-// 	// JsonArray users = root.createNestedArray("list");
 
-// 	JsonArray users = root.createNestedArray("userlist");
-
-// 	unsigned long count = 0;
-// 	unsigned long i = 0;
-// 	Dir dir = SPIFFS.openDir("/P/");
-
-// 	while (dir.next())
-// 	{
-// 		++count;
-// 		++i;
-
-// 		JsonObject item = users.createNestedObject();
-
-// 		String uid = dir.fileName();
-// 		uid.remove(0, 3);  // remove "/P/" from filename
-// 		item["uid"] = uid;
-
-// 		File f = SPIFFS.open(dir.fileName(), "r");
-// 		size_t size = f.size();
-// 		item["filesize"] = (unsigned long) size;
-
-// 		std::unique_ptr<char[]> buf(new char[size + 1]);
-// 		f.readBytes(buf.get(), size);
-// 		f.close();
-// 		buf[size] = '\0';
-
-// 		item["record"] = serialized(buf.get());
-
-// 		if (i >= 10) {
-// 			root["size"] = i;
-// 			root["index"] = count - i;
-
-// 			root["json_memory_usage"] = root.memoryUsage();
-// 			// mqttPublishEvent(&root, "notify/db/list");
-// 			root.clear();
-// 			users = root.createNestedArray("userlist");
-// 			i = 0;
-// 		}
-// 	}
-
-// 	SPIFFS.info(fsinfo);
-
-// 	root["size"] = i;
-// 	root["index"] = count - i;
-
-// 	root["total"] = count;
-// 	root["flash_used"] = fsinfo.usedBytes;
-	
-// 	root["json_memory_usage"] = root.memoryUsage();
-// 	mqttPublishEvent(&root, "notify/db/list");
-// }
-
-void addUserID(MqttMessage& message) {
+void addUserID(const MqttMessage& message) {
 	String filename("/P/");
 	filename += message.uid;
+	SEMAPHORE_FS_TAKE();
 	File f = SPIFFS.open(filename, "w");
 
-	DEBUG_SERIAL.println(filename);
-	// Check if we created the file
 	if (f)
 	{
 		mqttIncomingJson["record_time"] = now();
@@ -619,10 +677,12 @@ void addUserID(MqttMessage& message) {
 	} else {
 		mqttPublishNack("notify/db/add", "could not create file");
 	}
+	SEMAPHORE_FS_GIVE();
 }
 
 void deleteAllUserFiles()
 {
+	SEMAPHORE_FS_TAKE();
 	Dir dir = SPIFFS.openDir("/P/");
 	while (dir.next())
 	{
@@ -630,6 +690,7 @@ void deleteAllUserFiles()
 		uid.remove(0, 3);
 		SPIFFS.remove(dir.fileName());
 	}
+	SEMAPHORE_FS_GIVE();
 	mqttPublishAck("notify/db/drop", "complete");
 }
 
@@ -640,30 +701,24 @@ void deleteUserID(const char *uid)
 	{
 		String myuid = String(uid);
 		myuid = "/P/" + myuid;
+
+		SEMAPHORE_FS_TAKE();
+
 		if (SPIFFS.exists(myuid.c_str()) && SPIFFS.remove(myuid.c_str())) {
 			mqttPublishAck("notify/db/delete", String(uid).c_str());
 		} else {
 			mqttPublishNack("notify/db/delete", String(uid).c_str());
 		}
-		// Dir dir = SPIFFS.openDir("/P/");
-		// while (dir.next())
-		// {
-		// 	String user_id = dir.fileName();
-		// 	String myuid = uid;
-		// 	user_id.remove(0, 3);
-		// 	if (myuid == user_id)
-		// 	{
-		// 		SPIFFS.remove(dir.fileName());
-		// 	}
-		// }
+		SEMAPHORE_FS_GIVE();
 	}
 }
 
 void getDbStatus() {
 	DynamicJsonDocument root(512);
+	SEMAPHORE_FS_TAKE();
 	Dir dir = SPIFFS.openDir("/P/");
 	int i = 0;
-	DEBUG_SERIAL.println("[ INFO ] getDbStatus");
+	// DEBUG_SERIAL.println("[ INFO ] getDbStatus");
 	while (dir.next())
 	{
 		++i;
@@ -672,6 +727,7 @@ void getDbStatus() {
 	root["total"] = i;
 	FSInfo fsinfo;
 	SPIFFS.info(fsinfo);
+	SEMAPHORE_FS_GIVE();
 	root["flash_used"] = fsinfo.usedBytes;
 	root["flash_available"] = fsinfo.totalBytes - fsinfo.usedBytes;
 	mqttPublishEvent(&root, String("notify/db/count"));
@@ -683,7 +739,7 @@ void onMqttPublish(uint16_t packetId)
 	// writeEvent("INFO", "mqtt", "MQTT publish acknowledged", String(packetId));
 }
 
-void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
+void onMqttMessage(char *topic, const char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
 	// The AsyncMQTTClient library will pass partial payloads as the TCP packets are received
 	// * len is the length of this payload
 	// * index is starting location of this payload
@@ -691,74 +747,37 @@ void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties 
 
 	if (total > MAX_MQTT_BUFFER - 1) {
 		// payload too big for our buffer, skip it.
+		DEBUG_SERIAL.println("[ WARN ] Oversized payload received by onMqttMessage!");
 		return;
 	}
 
-	DEBUG_SERIAL.printf("[ INFO ] %lu - MQTT message incoming: %s (%u %u %u)\n", micros(), topic, index, len, total);
+	// DEBUG_SERIAL.printf("[ INFO ] %lu - MQTT message incoming: %s (%u %u %u)\n", micros(), topic, index, len, total);
 
-	size_t n = 0;
-	size_t i = index;
-	while(n < len) {
-		mqttBuffer[i] = payload[n];
-		n++;
-		i++;
-	}
-	if (index + len == total) { //payload complete
-		mqttBuffer[i] = '\0';
-	} else {
+	if (index + len > MAX_MQTT_BUFFER - 1)
+	{
+		// index and len would exceed our buffer
 		return;
 	}
 
-	MqttMessage *incomingMessage = new MqttMessage;
+	// copy payload into our own buffer (+1 is required for '\0')
+	strlcpy(mqttBuffer + index, payload, len + 1);
+
+	if (index + len < total)  //payload incomplete
+	{
+		return;
+	}
 
 	// DEBUG_SERIAL.printf("[ INFO ] JSON msg (%s): ", topic);
 	// DEBUG_SERIAL.println(mqttBuffer);
 
-	strlcpy(incomingMessage->topic, topic, sizeof(incomingMessage->topic));
-	strlcpy(incomingMessage->serializedMessage, mqttBuffer, MAX_MQTT_BUFFER);
-
-
-	// push message to queue to handle outside of callback
-	MqttMessages.push(incomingMessage);
-	DEBUG_SERIAL.printf("Free mem: %u\n", ESP.getFreeHeap());
-}
-
-void onMqttMessage_HandleRecord(char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
-	if (total > MAX_MQTT_BUFFER - 1) {
-		// payload too big for our buffer, skip it.
-		return;
-	}
-
-	size_t n = 0;
-	size_t i = index;
-	while(n < len) {
-		mqttBuffer[i] = payload[n];
-		n++;
-		i++;
-	}
-	if (index + len == total) { //payload complete
-		mqttBuffer[i] = '\0';
-	} else {
-		return;
-	}
-
-	MqttMessage *incomingMessage = new MqttMessage;
-
-	DEBUG_SERIAL.printf("[ INFO ] JSON msg (%s): ", topic);
-	DEBUG_SERIAL.println(mqttBuffer);
-
-	strlcpy(incomingMessage->topic, topic, sizeof(incomingMessage->topic));
-	strlcpy(incomingMessage->serializedMessage, mqttBuffer, MAX_MQTT_BUFFER);
-
-
-	// push message to queue to handle outside of callback
-	MqttMessages.push(incomingMessage);
-
+	// emplace makes a new item and pushes it on to the back of the
+	// queue to handle outside of callback.
+	MqttMessages.emplace(topic, mqttBuffer);
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
 {
-	String reasonstr = "";
+	String reasonstr("");
 	switch (reason)
 	{
 	case (AsyncMqttClientDisconnectReason::TCP_DISCONNECTED):
@@ -787,22 +806,17 @@ void onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
 		break;
 	}
 	// writeEvent("WARN", "mqtt", "Disconnected from MQTT server", reasonstr);
-	DEBUG_SERIAL.printf("Disconnected from MQTT server: %s\n", reasonstr.c_str());
-
-	// Do this in all cases in main loop.
-	// if (WiFi.isConnected())
-	// {
-	// 	mqttReconnectTimer.once(60, connectToMqtt);
-	// }
+	DEBUG_SERIAL.printf("[ WARN ] Disconnected from MQTT server: %s\n", reasonstr.c_str());
+	// the disconnect will be noticed in main loop and reconnect scheduled
 }
 
 void onMqttSubscribe(uint16_t packetId, uint8_t qos)
 {
 #ifdef DEBUG
-	Serial.println("[ INFO ] Subscribe acknowledged.");
-	Serial.print("[ INFO ] packetId: ");
-	Serial.println(packetId);
-	Serial.print("[ INFO ] qos: ");
+	Serial.print("[ INFO ] Subscribe acknowledged - ");
+	Serial.print("packetId: ");
+	Serial.print(packetId);
+	Serial.print(", qos: ");
 	Serial.println(qos);
 #endif
 }
@@ -820,7 +834,7 @@ void onMqttConnect(bool sessionPresent)
 		// writeEvent("INFO", "mqtt", "Connected to MQTT Server", "Session Present");
 	}
 	
-	mqttPublishBoot(now());
+	mqttPublishConnect(now());
 
 	String base_topic(config.mqttTopic);
 	String stopic("/db/+");
@@ -832,6 +846,8 @@ void onMqttConnect(bool sessionPresent)
 
 	stopic = base_topic + "/conf/+";
 	mqttClient.subscribe(stopic.c_str(), 2);
+
+	mqttReconnectTimer.detach();
 	// if (config.mqttHA)
 	// {
 	// 	mqttPublishDiscovery();

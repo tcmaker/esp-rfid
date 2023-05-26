@@ -27,25 +27,31 @@ enum ControlState {
     setup_remote,
     wait_remote,
     timeout_remote,
-    stop_remote,
     process_record_local,
     process_record_remote,
-    check_pin,
-    // grant_access,
-    // deny_access,
+    check_pin, // not currently implemented
     cool_down
 };
 
-void readHandler(ProxReaderInfo* reader);
-// void retrieveRecord(String uid);
 
+void readHandler(ProxReaderInfo* reader);
+
+
+/**
+ * @brief A manager class to handle false interrupts on the Wiegand inputs and
+ * prevent buffer overflows.
+ * 
+ */
 class TCMWiegandClass {
     public:
     // TCMWiegandClass();
 
+    // ProxReaderInfo* addReader(short pinData0, short pinData1);
+
     void begin(int pinD0, int pinD1);
 
     void loop();
+
 
     private:
     static ProxReaderInfo* reader;
@@ -97,6 +103,7 @@ class AccessControlClass {
 
     bool newRecord = false;
 	StaticJsonDocument<512> jsonRecord;
+    char buf[384];
     UserRecord currentUser;
 
     protected:

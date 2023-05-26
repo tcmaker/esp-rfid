@@ -26,20 +26,21 @@ public:
     // actuationTime > 0 implies momentary
     unsigned long actuationTime;
 
-    unsigned long lastMillis;
 
     // delayTime > 0 allows for tracking mechanical delays
     unsigned long delayTime;
 
-    Relay *chainRelay;
+    unsigned long lastMillis;
 
-    enum ChainType {
-        none,
-        activation,
-        deactivation,
-        both,
-        both_same_order
-    };
+    // Relay *chainRelay;
+
+    // enum ChainType {
+    //     none,
+    //     activation,
+    //     deactivation,
+    //     both,
+    //     both_same_order
+    // };
 
     enum OperationState {
         active,
@@ -47,6 +48,8 @@ public:
         inactive,
         deactivating
     };
+
+    static const char* OperationState_Label[4];
 
     OperationState state;
 
@@ -56,26 +59,28 @@ public:
         lockedout
     };
 
+    static const char* OverrideState_Label[3];
+
     OverrideState override;
 
 /**
  * @brief Construct a new Relay object
  * 
  */
-    Relay();
-    Relay(uint8_t pin, ControlType type = activeLow, unsigned long actuation_ms = 2000, unsigned long delay_ms = 0);
-    //Relay(uint8_t pin, ControlType type, unsigned long actuation_ms, unsigned long delay_ms);
-    // Relay(uint8_t pin, int type, unsigned long actuationTime);
-
-    void chain(const Relay *nextRelay, ChainType chaining);
+    explicit
+    Relay(uint8_t pin, 
+          ControlType type = activeLow,
+          unsigned long actuation_ms = 2000, 
+          unsigned long delay_ms = 0);
 
     void begin();
 
+    void (*onStateChangeCB)(OperationState operation, OverrideState override) = nullptr;
+
     // OperationState status();
 
-    void activate();
-
-    void deactivate();
+    void activate(bool report = true);
+    void deactivate(bool report = true);
 
     void hold();
     void lockout();
@@ -84,9 +89,6 @@ public:
     bool update();
 
     bool isConfigured();
-
-private:
-    void debugPrint(const char* info);
 };
 
 #endif

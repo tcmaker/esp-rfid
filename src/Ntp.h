@@ -11,6 +11,7 @@
 #include <ESP8266WiFi.h>
 #include <ESPAsyncUDP.h>
 #include <TimeLib.h>
+#include <Ticker.h>
 
 #define NTP_PACKET_SIZE 48 // NTP time is in the first 48 bytes of message
 
@@ -43,13 +44,15 @@ public:
 	static ICACHE_FLASH_ATTR time_t getUtcTimeNow();
 	bool ICACHE_FLASH_ATTR processTime();
 	time_t getUptimeSec();
+	static ICACHE_FLASH_ATTR time_t getNtpTime();
 
 private:
 	static ICACHE_FLASH_ATTR String zeroPaddedIntVal(int val);
-	static ICACHE_FLASH_ATTR time_t getNtpTime();
 
 protected:
 	time_t _uptimesec = 0;
 };
+
+extern Ticker NTPUpdateTimer;
 
 #endif /* NTP_H_ */
