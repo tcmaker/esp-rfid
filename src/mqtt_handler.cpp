@@ -2,6 +2,7 @@
 
 #define DEBUG_SERIAL if(DEBUG)Serial
 
+bool _dbSemaphore = false;
 char mqttBuffer[MAX_MQTT_BUFFER];
 DynamicJsonDocument mqttIncomingJson(4096);
 std::queue<MqttMessage> MqttMessages;
@@ -95,7 +96,21 @@ void processMqttMessage(MqttMessage& incomingMessage)
 		DEBUG_SERIAL.println(incomingMessage.uid);
 		deleteUserID(incomingMessage.uid);
 		break;
-	case GET_UIDS:
+	case DROP_DB:
+		deleteAllUserFiles();
+		break;
+	case GET_UID:
+		// DynamicJsonDocument root(256);
+		// if (!mqttIncomingJson.containsKey("uid")) {
+		// 	mqttPublishNack(topic, "invalid schema");
+		// 	return;
+		// } else if (getUserRecord(mqttIncomingJson["uid"], root)) {
+		// 	mqttPublishEvent(&root, "notify/db/get");
+		// } else {
+		// 	mqttPublishNack(topic, "not found");
+		// }
+		break;
+	case GET_FULL_DB:
 		DEBUG_SERIAL.println("[ INFO ] Get User List");
 		getUserList();
 		break;
@@ -260,6 +275,30 @@ bool MqttDatabaseSender::run() {
 	return true;
 }
 
+bool getUserRecord(String uid, JsonDocument& item) {
+	String file = String("/P/") + uid;
+	item["uid"] = uid;
+	item["filename"] = file;
+
+	File f = SPIFFS.open(file, "r");
+	if (f) {
+		item["result"] = F("found");
+		size_t size = f.size();
+		item["filesize"] = (unsigned) size;
+
+		std::unique_ptr<char[]> buf(new char[size + 1]);
+		f.readBytes(buf.get(), size);
+		buf[size] = '\0'; 		// ensure buffer is null terminated
+		f.close();
+		// presume that file is already JSON
+		item["record"] = serialized(&(buf.get()[0]));
+		return true;
+	} else {
+		item["result"] = F("not found");
+		return false;
+	}
+}
+
 void setupMqtt()
 {
   if (!config.mqttEnabled)
@@ -342,9 +381,12 @@ MqttAccessTopic decodeMqttTopic(const char *topic) {
 	} else if (strcmp(subTopic, "db/status") == 0) {
 		DEBUG_SERIAL.println("[ INFO ] db/status");
  		return GET_NUM_UIDS;
+	} else if (strcmp(subTopic, "db/drop") == 0) {
+		DEBUG_SERIAL.println("[ INFO ] db/drop");
+ 		return DROP_DB;
 	} else if (strcmp(subTopic, "db/get") == 0) {
 		DEBUG_SERIAL.println("[ INFO ] db/get");
- 		return GET_UIDS;
+ 		return GET_FULL_DB;
 	} else if (strcmp(subTopic, "set/unlock") == 0) {
 		DEBUG_SERIAL.println("[ INFO ] set/unlock");
  		return UNLOCK;
@@ -649,6 +691,27 @@ void mqttPublishIo(String const &io, String const &state)
 	}
 }
 
+void getUserID(const MqttMessage& message) {
+	String filename("/P/");
+	filename += message.uid;
+
+	SEMAPHORE_FS_TAKE();
+	File f = SPIFFS.open(filename, "w");
+
+	if (f)
+	{
+		mqttIncomingJson["record_time"] = now();
+		mqttIncomingJson["source"] = "MQTT";
+		// mqttIncomingJson["uid"] = message.uid;
+		mqttIncomingJson.remove("id");
+		serializeJson(mqttIncomingJson, f);
+		f.close();
+		mqttPublishAck("notify/db/add", filename.c_str());
+	} else {
+		mqttPublishNack("notify/db/add", "could not create file");
+	}
+	SEMAPHORE_FS_GIVE();
+}
 
 void getUserList() {
 	if (flagMQTTSendUserList) {
@@ -662,6 +725,7 @@ void getUserList() {
 void addUserID(const MqttMessage& message) {
 	String filename("/P/");
 	filename += message.uid;
+
 	SEMAPHORE_FS_TAKE();
 	File f = SPIFFS.open(filename, "w");
 
@@ -669,7 +733,7 @@ void addUserID(const MqttMessage& message) {
 	{
 		mqttIncomingJson["record_time"] = now();
 		mqttIncomingJson["source"] = "MQTT";
-		mqttIncomingJson["uid"] = message.uid;
+		// mqttIncomingJson["uid"] = message.uid;
 		mqttIncomingJson.remove("id");
 		serializeJson(mqttIncomingJson, f);
 		f.close();

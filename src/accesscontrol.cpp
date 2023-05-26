@@ -85,7 +85,7 @@ void readHandler(ProxReaderInfo* reader) {
 		}
 		unsigned long code = reader->facilityCode << 16 | reader->cardCode;
 		
-		String uid = String(code, HEX);
+		String uid = String(code, DEC);
 		// String type = String(reader->bitCount, DEC);
 
 		DEBUG_SERIAL.print(F("[ INFO ] UID: "));
@@ -246,11 +246,11 @@ void AccessControlClass::loop()  {
 		result = this->checkUserRecord();
 		handleResult(result);
 		state = ControlState::cool_down;
+		DEBUG_SERIAL.printf("json size before cool down: %u\n", jsonRecord.memoryUsage());
 		break;
 	case ControlState::cool_down:
 		if (millis() - lastMilli > 1500) {
 			state = ControlState::wait_read;
-			DEBUG_SERIAL.printf("json size: %u\n", jsonRecord.memoryUsage());
 		}
 		break;
 	case ControlState::wait_read:
@@ -325,7 +325,7 @@ void AccessControlClass::handleResult(const AccessResult result) {
 	String detail("N/A");
 	String name;
 
-	name = jsonRecord["person"] | "N/A";
+	name = jsonRecord["username"] | "N/A";
 
 	// looks at result and state to indicate why the result occured.
 	switch (result)

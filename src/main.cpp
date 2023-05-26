@@ -117,7 +117,7 @@ bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
 #include "webserver.esp"
 #include "doorbell.esp"
 
-bool mqttSendUserList();
+// bool mqttSendUserList();
 void armRemoteLookup(String uid);
 
 void accessGranted_wrapper(AccessResult result, String detail, String credential, String name)

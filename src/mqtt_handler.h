@@ -12,17 +12,17 @@
 
 #define MAX_MQTT_BUFFER 2048
 
-#define SEMAPHORE_FS_TAKE(X) while (_xSemaphore) { /*ESP.wdtFeed();*/ } _xSemaphore = true
-#define SEMAPHORE_FS_GIVE(X) _xSemaphore = false
-
-bool _xSemaphore;
+#define SEMAPHORE_FS_TAKE(X) while (_dbSemaphore) { /*ESP.wdtFeed();*/ } _dbSemaphore = true
+#define SEMAPHORE_FS_GIVE(X) _dbSemaphore = false
 
 enum MqttAccessTopic {
     UNSUPPORTED,
     ADD_UID,
+    GET_UID,
     DELETE_UID,
     GET_NUM_UIDS,
-    GET_UIDS,
+    GET_FULL_DB,
+    DROP_DB,
     UNLOCK,
     LOCK,
     GET_CONF
