@@ -1,6 +1,7 @@
 void ICACHE_FLASH_ATTR procMsg(AsyncWebSocketClient *client, size_t sz)
 {
 	// We should always get a JSON object (stringfied) from browser, so parse it
+	// @todo make this smaller as there currently isn't enough RAM to upload a config file
 	DynamicJsonDocument root(8192);
 	char json[sz + 1];
 	memcpy(json, (char *)(client->_tempObject), sz);

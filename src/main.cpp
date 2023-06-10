@@ -1,6 +1,7 @@
 /*
 MIT License
 
+Copyright (c) 2023 Brad Ferguson, Twin Cities Maker
 Copyright (c) 2018 esp-rfid Community
 Copyright (c) 2017 Ömer Şiar Baysal
 
@@ -25,19 +26,18 @@ SOFTWARE.
 
 
 #include "Arduino.h"
-#include <ESP8266WiFi.h>
-// #include <SPI.h>
-#include <ESP8266mDNS.h>
-#include <ArduinoJson.h>
 #include <FS.h>
+#include <ArduinoJson.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
 #include <ESPAsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <TimeLib.h>
-#include <Ticker.h>
-#include "Ntp.h"
 #include <AsyncMqttClient.h>
+#include <Ticker.h>
+#include <TimeLib.h>
+#include "Ntp.h"
 #include <Bounce2.h>
 
+#include <ESPAsyncWebServer.h>
 // these are from vendors
 #include "webh/glyphicons-halflings-regular.woff.gz.h"
 #include "webh/required.css.gz.h"
@@ -48,43 +48,6 @@ SOFTWARE.
 #include "webh/esprfid.htm.gz.h"
 #include "webh/index.html.gz.h"
 
-NtpClient NTP;
-AsyncMqttClient mqttClient;
-Ticker NTPUpdateTimer;
-Ticker mqttReconnectTimer;
-Ticker wifiReconnectTimer;
-WiFiEventHandler wifiDisconnectHandler, wifiConnectHandler, wifiOnStationModeGotIPHandler;
-
-AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
-
-#define DEBUG_SERIAL if(DEBUG)Serial
-
-// Variables for whole scope
-bool FS_IN_USE = false;
-bool triggerMqttConnect = false;
-unsigned long cooldown = 0;
-unsigned long currentMillis = 0;
-unsigned long deltaTime = 0;
-bool flagMQTTSendUserList = false;
-bool doEnableWifi = false;
-bool formatreq = false;
-const char *httpUsername = "admin";
-unsigned long keyTimer = 0;
-bool forceNtpUpdate = false;
-
-uint8_t lastDoorbellState = 0;
-uint8_t lastDoorState = 0;
-uint8_t lastTamperState = 0;
-unsigned long openDoorMillis = 0;
-
-unsigned long lastbeat = 0;
-unsigned long previousLoopMillis = 0;
-unsigned long previousMillis = 0;
-bool shouldReboot = false;
-unsigned long wifiPinBlink = millis();
-unsigned long wiFiUptimeMillis = 0;
-
 #include "config.h"
 #include "log.esp"
 #include "mqtt_handler.h"
@@ -94,13 +57,78 @@ unsigned long wiFiUptimeMillis = 0;
 #include "door.h"
 #include "accesscontrol.h"
 
-MqttDatabaseSender *mqttDbSender = nullptr;
+#define DEBUG_SERIAL if(DEBUG)Serial
+
+/**
+ * @brief Tickers use interrupts and callbacks to implement:
+ * Initial NTP time synchronization
+ * Connection to MQTT broker
+ * Wi-Fi reconnection
+ */
+Ticker NTPUpdateTimer;
+Ticker mqttReconnectTimer;
+Ticker wifiReconnectTimer;
+
+AsyncMqttClient mqttClient;
+NtpClient NTP;
+WiFiEventHandler wifiDisconnectHandler, wifiConnectHandler, wifiOnStationModeGotIPHandler;
+
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+const char *httpUsername = "admin";
+
+/**
+ * @brief Semaphore for file system access (reads and writes to user database)
+ */
+bool FS_IN_USE = false;
+
+/**
+ * @brief Used by legacy code
+ */
+unsigned long currentMillis = 0;
+unsigned long deltaTime = 0;
+unsigned long previousLoopMillis = 0;
+unsigned long previousMillis = 0;
+
+/**
+ * @brief Indicates that the main loop should send the user list via MQTT.
+ * This is set by mqtt_handler.cpp when the GET_FULL_DB command is received.
+ * It is reset to false once the entire DB has been sent (or timed out)
+  */
+bool flagMQTTSendUserList = false;
+
+/**
+ * @brief Signals used by legacy code
+ */
+bool doEnableWifi = false;
+bool formatreq = false;
+bool shouldReboot = false;
+
+/**
+ * @brief Used by legacy code to automatically disable Wi-Fi connection
+ * after a certain amount of uptime.
+ */
+unsigned long wiFiUptimeMillis = 0;
+
+/**
+ * @brief Used by legacy code to handle keypad entry 
+ */
+unsigned long keyTimer = 0;
+
+/**
+ * @brief Used to send heartbeat message via MQTT
+ */
+unsigned long lastbeat = 0;
+
+// unsigned long wifiPinBlink = millis();
+
 
 Door *door = nullptr;
 Bounce *openLockButton = nullptr;
 BounceWithCB *doorStatusPin = nullptr;
 Relay *relayLock = nullptr;
 Relay *relayGreen = nullptr;
+MqttDatabaseSender *mqttDbSender = nullptr;
 
 bool networkFirstUp = false;
 
@@ -117,9 +145,27 @@ bool deactivateRelay[MAX_NUM_RELAYS] = {false, false, false, false};
 #include "webserver.esp"
 #include "doorbell.esp"
 
-// bool mqttSendUserList();
+/**
+ * @brief Primes the MQTT receive callback to populate a user record in the case
+ * that the access control server is able to send a new record in time.
+ * This implements "on-demand" lookup for cases where the local lookup results in
+ * access denied
+ * 
+ * @param uid RFID fob value ASCII decimal format
+ */
 void armRemoteLookup(String uid);
 
+// @{
+/**
+ * @brief Callback from AccessContoller when it is determined the user is 
+ * authorized. This will trigger the MQTT logging message and trigger the
+ * door activation function.
+ * 
+ * @param result Result to report
+ * @param detail Random details of how the result was obtained
+ * @param credential The RFID fob (or other) credential used
+ * @param name The name of individual, if available
+ */
 void accessGranted_wrapper(AccessResult result, String detail, String credential, String name)
 {
 	DEBUG_SERIAL.printf("[ INFO ] Access granted: %s\n", detail.c_str());
@@ -130,13 +176,23 @@ void accessGranted_wrapper(AccessResult result, String detail, String credential
 	door->activate();
 }
 
+/**
+ * @see accessGranted_wrapper
+ */
 void accessDenied_wrapper(AccessResult result, String detail, String credential, String name)
 {
 	DEBUG_SERIAL.printf("[ INFO ] Access denied: %s\n", detail.c_str());
 	DEBUG_SERIAL.printf("Wi-Fi connected: %d, NTP timer: %d, MQTT timer: %d\n", WiFi.isConnected(), NTPUpdateTimer.active(), mqttReconnectTimer.active());
 	mqttPublishAccess(now(), result, detail, credential, name);
 }
+// @}
 
+/**
+ * @brief Callback from Door to indicate when the lock state has changed
+ * 
+ * @param op_state whether the lock relay is locking/locked or unlocking/unlocked
+ * @param or_state whether the lock relay is self-timing or in an override state
+ */
 void onLockChange(Relay::OperationState op_state, Relay::OverrideState or_state) {
 	DEBUG_SERIAL.printf("[ INFO ] Unlock relay: %s (%s)\n", 
 						Relay::OperationState_Label[op_state],
@@ -146,11 +202,18 @@ void onLockChange(Relay::OperationState op_state, Relay::OverrideState or_state)
 	mqttPublishIo("unlock_relay", state);
 }
 
+/**
+ * @brief Callback from Door when the door open/closed feedback has changed.
+ * @note This will be called @b after the debounce logic has run.
+ * 
+ * @param state whether the door is open or closed
+ */
 void onOpenCloseChange(bool state) {
 	DEBUG_SERIAL.printf("[ INFO ] Door state: %s\n",
 						state ? "open" : "closed");
 	mqttPublishIo("door_open", String(state ? "true" : "false"));
 }
+
 
 static String localUid;
 
@@ -169,9 +232,8 @@ void armRemoteLookup(String uid) {
  * in the `wait_remote` state, then this will copy over the relevent data from the MQTT message to the
  * AccessControl record and update the AccessControl state.
  * 
- * 
- * Note that this could be called asynchronously on the via the onMqttMessage() call back, but the
- * current implementation processes the MQTT payloads via the main loop.
+ * @note This @e could be called asynchronously on the via the onMqttMessage() call back, but the
+ * current implementation processes the MQTT payloads via the main loop, which is more than fast enough.
  * 
  * @param uid The "credential" from the new payload
  * @param payload A reference to the MQTT JSON payload
@@ -251,8 +313,9 @@ void ICACHE_FLASH_ATTR setup()
 
 	bootInfo.configured = loadConfiguration();
 
-	ws.setAuthentication("admin", config.httpPass);
+	ws.setAuthentication(httpUsername, config.httpPass);
 
+	// There is a button marked "OPEN" on the ESP-RFID...
 	if (config.openlockpin != 255)
 	{
 		// DEBUG_SERIAL.printf("microseconds: %lu - setting up openLockButton (pin %d)\n", micros(), config.openlockpin);
@@ -260,6 +323,7 @@ void ICACHE_FLASH_ATTR setup()
 		openLockButton->attach(config.openlockpin, INPUT_PULLUP);
 		openLockButton->interval(30);
 	}
+
 
 	if (config.doorstatpin != 255)
 	{
