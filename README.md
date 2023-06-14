@@ -1,8 +1,8 @@
-# ESP RFID - Access Control with ESP8266, RC522 PN532 Wiegand RDM6300
+# ESP RFID - Access Control with ESP8266 + Wiegand 
 
-[![Chat at https://gitter.im/esp-rfid/Lobby](https://badges.gitter.im/esp-rfid.svg)](https://gitter.im/esp-rfid/Lobby) [![Backers on Open Collective](https://opencollective.com/esp-rfid/backers/badge.svg)](#backers) [![Sponsors on Open Collective](https://opencollective.com/esp-rfid/sponsors/badge.svg)](#sponsors) [![Bountysource](https://api.bountysource.com/badge/team?team_id=242217)](https://salt.bountysource.com/checkout/amount?team=esp-rfid)
+Fork of [https://github.com/esp-rfid (dev branch)](https://github.com/esprfid/esp-rfid/tree/dev) with extensive rewrites of relay handling and MQTT.
 
-Access Control system using a cheap MFRC522, PN532 RFID, RDM6300 readers or Wiegand RFID readers and Espressif's ESP8266 Microcontroller. 
+Access Control system using a cheap ~~MFRC522, PN532 RFID, RDM6300 readers or~~ Wiegand RFID readers and Espressif's ESP8266 Microcontroller to handle garge door controller interlock.
 
 [![Showcase Gif](https://raw.githubusercontent.com/esprfid/esp-rfid/stable/demo/showcase.gif)](https://bitadvise.com/esp-rfid/)[![Board](https://raw.githubusercontent.com/esprfid/esp-rfid/stable/demo/board.jpg)](https://www.tindie.com/products/nardev/esp-rfid-relay-board-12v-in-esp8266-board/)
 
